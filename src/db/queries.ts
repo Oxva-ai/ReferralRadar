@@ -39,6 +39,7 @@ export interface ReferralRow {
   notes: string | null
   created_at: Date
   updated_at: Date
+  category: string | null
 }
 
 export interface InsertReferral {
@@ -68,6 +69,7 @@ export interface InsertReferral {
   reddit_comments?: number | null
   is_active?: boolean
   notes?: string | null
+  category?: string | null
 }
 
 export async function insertReferral(data: InsertReferral): Promise<ReferralRow> {
@@ -78,14 +80,14 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
       reward_type, qualifying_spend, max_referrals, content_hash, change_type,
       previous_offer, previous_offer_numeric, score, sources, source_count,
       uk_signal_strength, reddit_post_id, reddit_score, reddit_comments,
-      is_active, notes
+      is_active, notes, category
     ) VALUES (
       $1, $2, $3, $4, $5,
       $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15,
       $16, $17, $18, $19, $20,
       $21, $22, $23, $24,
-      $25, $26
+      $25, $26, $27
     )
     RETURNING *
   `, [
@@ -115,6 +117,7 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
     data.reddit_comments ?? null,
     data.is_active ?? true,
     data.notes ?? null,
+    data.category ?? null,
   ])
   return result.rows[0]!
 }

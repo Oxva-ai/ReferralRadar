@@ -2,6 +2,7 @@ import { logger } from '../logger.js'
 import { computeContentHash } from '../lib/hash.js'
 import { pool } from '../db/pool.js'
 import { isSkipDomain } from '../lib/blocklist.js'
+import { getCompanyName, getCategory } from '../lib/brands.js'
 import {
   findReferralBySourceUrl,
   findReferralByContentHash,
@@ -177,11 +178,18 @@ export async function storeReferral(
   }
 
   const contentHash = extracted.offerText ? computeContentHash(extracted.offerText) : null
+  const domain = extractDomain(url) ?? ''
+
+  // Resolve company name and category from brand list
+  const brandName = getCompanyName(domain)
+  const category = getCategory(domain)
+  const finalCompanyName = brandName ?? extracted.companyName
+  const finalCategory = category ?? null
 
   const data: InsertReferral = {
     source_url: url,
     referral_link: extracted.referralLink,
-    company_name: extracted.companyName,
+    company_name: finalCompanyName,
     offer_text: extracted.offerText,
     reward: extracted.reward,
     reward_numeric: extracted.rewardNumeric,
@@ -197,6 +205,7 @@ export async function storeReferral(
     reddit_post_id: redditPostId ?? null,
     reddit_score: redditScore ?? null,
     reddit_comments: redditComments ?? null,
+    category: finalCategory,
   }
 
   const row = await insertReferral(data)
