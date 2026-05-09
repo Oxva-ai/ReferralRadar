@@ -49,15 +49,27 @@ Every URL discovered goes through:
 
 ## Scoring
 
-Referrals are scored 0-1 based on five weighted factors:
+Referrals are scored 0-1 based on six weighted factors:
 
 | Factor | Weight | What it measures |
 |--------|--------|------------------|
-| Freshness | 25% | How recently discovered (decays over 30 days) |
-| Novelty | 20% | Fewer sources = more novel (undiscovered) |
+| Freshness | 20% | How recently discovered (decays over 30 days) |
+| Novelty | 15% | Fewer sources = more novel (undiscovered) |
 | Value | 20% | Higher reward amounts score better |
 | UK signal | 10% | Stronger UK signals = more relevant |
-| Engagement | 25% | Click-through rate on displayed offers |
+| Engagement | 20% | Click-through rate on displayed offers |
+| Source rarity | 15% | Brand-search/URL-guesser = 1.0, Serper/Brave = 0.3 |
+
+### Review workflow
+
+Referrals are auto-assigned a review status based on confidence:
+
+| Status | Meaning |
+|--------|---------|
+| `approved` | Confidence ≥ 0.4, auto-approved for EasyEarns |
+| `pending` | Awaiting manual review |
+| `needs_fix` | Confidence < 0.2, likely needs data cleanup |
+| `rejected` | Manually rejected |
 
 ---
 
@@ -86,12 +98,21 @@ Referrals are scored 0-1 based on five weighted factors:
 | `PATCH /admin/referrals/:id` | Edit company, reward, category |
 | `DELETE /admin/referrals/:id` | Soft-delete referral |
 | `POST /admin/referrals/batch-categorize` | Bulk category assignment |
+| `PATCH /admin/referrals/:id/review` | Set review status |
+| `GET /admin/referrals/pending-review` | List referrals needing review |
+| `POST /admin/referrals/auto-approve` | Bulk approve by confidence threshold |
 | `GET /admin/workers/:name` | Worker run history |
 | `POST /admin/workers/:name/restart` | Trigger worker immediately |
 | `GET /admin/blocklist` | List blocked domains |
 | `POST /admin/blocklist` | Add domain to blocklist |
+| `DELETE /admin/blocklist/:domain` | Remove domain |
 | `POST /admin/brands/reload` | Reload brand directory from DB |
-| `GET/POST/DELETE /admin/webhooks` | Webhook management |
+| `GET /admin/webhooks` | List webhooks |
+| `POST /admin/webhooks` | Register webhook |
+| `DELETE /admin/webhooks/:id` | Remove webhook |
+| `GET /admin/webhooks/:id/deliveries` | Webhook delivery history |
+| `POST /admin/keys/rotate` | Rotate API key (7-day grace period) |
+| `GET /admin/keys/status` | Key rotation status |
 
 ---
 
@@ -99,13 +120,16 @@ Referrals are scored 0-1 based on five weighted factors:
 
 - **Runtime**: Node.js 22+, TypeScript strict, ESM
 - **Framework**: Express 5
-- **Database**: Supabase PostgreSQL (pgcrypto, pg_trgm, fuzzystrmatch)
+- **Database**: Supabase PostgreSQL (pgcrypto, pg_trgm, fuzzystrmatch) — 16 tables, RLS enabled
 - **HTTP**: `got` (HTTP/2, retry, circuit breaker)
 - **Scraping**: Cheerio
-- **Scheduling**: node-cron (15 workers)
+- **Scheduling**: node-cron (13 workers)
+- **Queue**: Postgres-backed durable queue (`FOR UPDATE SKIP LOCKED`)
+- **Webhooks**: HMAC-SHA256 signed, exponential backoff retry (5 attempts)
 - **Validation**: Zod
 - **Logging**: Pino
-- **Auth**: Bearer tokens (timing-safe comparison)
+- **Auth**: Bearer tokens (timing-safe comparison), key rotation with grace period
+- **Testing**: Vitest 3.x — 52 unit tests + 9 DB integration tests
 
 ---
 
@@ -120,6 +144,20 @@ npm run db:seed
 npm run dev
 ```
 
+### Available scripts
+
+| Script | Purpose |
+|--------|---------|
+| `npm run dev` | Start dev server with hot reload |
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm start` | Run compiled production build |
+| `npm run typecheck` | TypeScript type checking |
+| `npm test` | Run 52 unit tests |
+| `npm run test:integration` | Run 9 DB-backed integration tests (requires Postgres) |
+| `npm run db:migrate` | Apply schema to database |
+| `npm run db:seed` | Seed initial data |
+| `npm run lint` | ESLint code quality |
+
 ### Required env vars
 
 | Variable | Description |
@@ -127,9 +165,14 @@ npm run dev
 | `DATABASE_URL` | Supabase session pooler connection string |
 | `EASYEARNS_API_KEY` | API key for Easyearns access |
 | `ADMIN_API_KEY` | API key for admin endpoints |
-| `SERPER_API_KEY` | Serper.dev search API (2500/mo free) |
-| `BRAVE_API_KEY` | Brave Search API (2000/mo free) |
+| `SERPER_API_KEY` | Serper.dev search API (2,500/mo free) |
+| `BRAVE_API_KEY` | Brave Search API (2,000/mo free) |
+| `LOGO_DEV_TOKEN` | Logo.dev API token for brand logos |
 | `CORS_ORIGINS` | Comma-separated allowed origins |
+| `EASYEARNS_STAGING_ORIGINS` | Comma-separated staging origins for CORS |
+| `REFERRAL_RETENTION_DAYS` | Days before soft-deleting old referrals (default 365) |
+| `EVENT_RETENTION_DAYS` | Days before removing old click/impression events (default 90) |
+| `KEY_ROTATION_GRACE_DAYS` | Days old API key remains valid after rotation (default 7) |
 
 ---
 
@@ -138,11 +181,40 @@ npm run dev
 - **Host**: Railway (minimum compute tier, nixpacks build)
 - **Database**: Supabase (free tier, session pooler on port 5432)
 - **Healthcheck**: cron-job.org pings `/api/v1/health` every 5 min (prevents cold starts)
-- **CI**: GitHub Actions — typecheck, vitest, build
+- **CI**: GitHub Actions — Postgres 15 service → migrations → typecheck → 52 unit tests → 9 integration tests → build
+- **DB pool**: Limited to 5 connections (Supabase free tier limit)
 
 ```bash
 railway up
 ```
+
+---
+
+## Extraction fields
+
+Each referral carries these extracted fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `company_name` | string | Cleaned company name via brand DB or extraction |
+| `brand` | string | Resolved brand from 208-UK-brand directory |
+| `reward` | string | Raw reward text (e.g. "£20") |
+| `reward_numeric` | number | Parsed numeric value |
+| `reward_type` | enum | dual, per_referral, capped, free_product, free_share, switching_bonus, percentage, signup_credit, image_text |
+| `referrer_reward` | string | What the referrer gets |
+| `referee_reward` | string | What the friend gets |
+| `offer_summary` | string | Human-readable summary (e.g. "You get £20, your friend gets £25") |
+| `referral_link` | string | Shareable referral URL |
+| `referral_code` | string | Extracted code from URL params or page text |
+| `qualifying_spend` | string | Minimum spend/deposit required |
+| `max_referrals` | number | Maximum referrals allowed |
+| `terms_url` | string | Link to T&Cs page |
+| `expires_at` | string | Detected offer expiry date (ISO 8601) |
+| `confidence` | number | 0-1 quality score based on signal strength |
+| `review_status` | enum | pending, approved, rejected, needs_fix |
+| `category` | string | Resolved category from brand directory |
+| `first_source` | string | Which discovery source found this first |
+| `score` | number | 0-1 composite score |
 
 ---
 
