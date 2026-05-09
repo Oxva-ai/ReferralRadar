@@ -50,8 +50,13 @@ router.get('/health', async (_req: Request, res: Response) => {
       version: '1.0.0',
     })
   } catch (err) {
-    logger.error({ err }, 'health check failed')
-    res.status(503).json({ status: 'error', error: 'database connection failed' })
+    logger.warn({ err }, 'health check db connection failed, returning degraded')
+    res.json({
+      status: 'degraded',
+      uptime_seconds: process.uptime(),
+      db: 'disconnected',
+      version: '1.0.0',
+    })
   }
 })
 
