@@ -229,20 +229,29 @@ function renderDashboard(d: DashboardData): string {
       source_count: r.source_count, uk_signal_strength: r.uk_signal_strength,
       discovered_at: r.discovered_at, last_verified_at: r.last_verified_at, expires_at: r.expires_at,
       verification_failures: r.verification_failures, notes: r.notes, category: r.category,
-      is_active: r.is_active, change_type: r.change_type,
+      is_active: r.is_active, change_type: r.change_type, review_status: r.review_status, confidence: r.confidence,
     }).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
 
-    referralRows += `<tr class="ref-row" data-id="${esc(id)}" data-json="${dataJson}" data-company="${esc(r.company_name)}" data-reward="${esc(r.reward)}" data-category="${esc(cat)}">
+    const score = r.score != null ? String(Number(r.score).toFixed(2)) : '--'
+    const review = (r.review_status as string) || 'pending'
+    const revClass = review === 'approved' ? 'badge-approved' : review === 'rejected' ? 'badge-rejected' : review === 'needs_fix' ? 'badge-needsfix' : 'badge-pending'
+    const confidence = r.confidence != null ? String(Math.round(Number(r.confidence) * 100)) + '%' : '--'
+
+    referralRows += `<tr class="ref-row" data-id="${esc(id)}" data-json="${dataJson}" data-company="${esc(r.company_name)}" data-reward="${esc(r.reward)}" data-category="${esc(cat)}" data-review="${esc(review)}">
       <td class="cb-col"><input type="checkbox" class="ref-checkbox" data-id="${esc(id)}"></td>
       <td><a class="ref-link" href="${esc(r.source_url)}" target="_blank" rel="noopener">${esc(r.company_name)}</a></td>
       <td>${esc(r.reward)}</td>
       <td class="dim">${esc(cat)}</td>
+      <td>${score}</td>
+      <td>${confidence}</td>
       <td class="center">${linkIcon}</td>
       <td><span class="source-tag">${esc(primarySource)}</span></td>
       <td class="dim" style="font-size:12px">${new Date(r.discovered_at as string).toLocaleString()}</td>
+      <td><span class="badge ${revClass}">${esc(review)}</span></td>
       <td class="actions-col">
+        <button class="btn-sm btn-approve" data-id="${esc(id)}" title="Approve">&#10003;</button>
+        <button class="btn-sm btn-reject" data-id="${esc(id)}" title="Reject">&#10007;</button>
         <button class="btn-sm btn-edit" data-id="${esc(id)}">Edit</button>
-        <button class="btn-sm btn-del" data-id="${esc(id)}">Del</button>
       </td>
     </tr>`
   }
@@ -313,6 +322,10 @@ function renderDashboard(d: DashboardData): string {
   .badge-failed{background:rgba(220,38,38,.1);color:#DC2626}
   .badge-dim{background:rgba(100,116,139,.08);color:#64748B}
   .badge-never_run{background:rgba(100,116,139,.08);color:#64748B}
+  .badge-approved{background:rgba(15,118,110,.1);color:#0F766E}
+  .badge-pending{background:rgba(217,119,6,.1);color:#D97706}
+  .badge-needsfix{background:rgba(220,38,38,.15);color:#DC2626}
+  .badge-rejected{background:rgba(100,116,139,.1);color:#64748B}
 
   .link-ok{color:#0F766E;font-weight:700;font-size:16px}
   .link-missing{color:#DC2626;font-weight:700;font-size:16px}
@@ -335,6 +348,10 @@ function renderDashboard(d: DashboardData): string {
   .btn-sm:hover:not(:disabled){background:#F8FAFC}
   .btn-edit{color:#0F766E;border-color:#0F766E;background:#FFFFFF}
   .btn-edit:hover:not(:disabled){background:rgba(15,118,110,.06)}
+  .btn-approve{color:#0F766E;border-color:#0F766E;background:#FFFFFF;font-size:14px;padding:1px 6px}
+  .btn-approve:hover:not(:disabled){background:rgba(15,118,110,.1);color:#0D6B63}
+  .btn-reject{color:#DC2626;border-color:#DC2626;background:#FFFFFF;font-size:14px;padding:1px 6px;margin-left:2px}
+  .btn-reject:hover:not(:disabled){background:rgba(220,38,38,.1)}
   .btn-del{color:#DC2626;border-color:#DC2626;background:#FFFFFF;margin-left:4px}
   .btn-del:hover:not(:disabled){background:rgba(220,38,38,.06)}
   .btn-run{color:#0F766E;border-color:#0F766E;background:#FFFFFF}
@@ -442,12 +459,19 @@ function renderDashboard(d: DashboardData): string {
       <option value="other">Other</option>
       <option value="spam">Spam</option>
     </select>
+    <select id="review-filter">
+      <option value="">All reviews</option>
+      <option value="pending">Pending</option>
+      <option value="needs_fix">Needs Fix</option>
+      <option value="approved">Approved</option>
+      <option value="rejected">Rejected</option>
+    </select>
     <button class="btn-sm" id="btn-categorise">Categorise</button>
   </div>
   ${d.referrals.length === 0
     ? '<p class="empty">No referrals yet.</p>'
     : `<div style="overflow-x:auto"><table>
-    <thead><tr><th class="cb-col"><input type="checkbox" id="select-all"></th><th>Company</th><th>Reward</th><th>Category</th><th class="center">Link</th><th>Source</th><th>Discovered</th><th class="actions-col">Actions</th></tr></thead>
+    <thead><tr><th class="cb-col"><input type="checkbox" id="select-all"></th><th>Company</th><th>Reward</th><th>Category</th><th>Score</th><th>Conf</th><th class="center">Link</th><th>Source</th><th>Discovered</th><th>Review</th><th class="actions-col"></th></tr></thead>
     <tbody id="ref-tbody">${referralRows}</tbody></table></div>`}
 </div>
 
@@ -583,12 +607,23 @@ function renderDashboard(d: DashboardData): string {
   //---- referrals: search ----
   var refSearch = document.getElementById('ref-search')
   if (refSearch) {
-    refSearch.addEventListener('input', function(){
-      var q = refSearch.value.toLowerCase()
-      document.querySelectorAll('#ref-tbody .ref-row').forEach(function(row){
-        var txt = (row.dataset.company + ' ' + row.dataset.reward + ' ' + row.dataset.category).toLowerCase()
-        row.style.display = txt.includes(q) ? '' : 'none'
-      })
+    refSearch.addEventListener('input', doFilter)
+  }
+
+  //---- referrals: review status filter ----
+  var reviewFilter = document.getElementById('review-filter')
+  if (reviewFilter) {
+    reviewFilter.addEventListener('change', doFilter)
+  }
+
+  function doFilter() {
+    var q = (refSearch?.value || '').toLowerCase()
+    var rev = reviewFilter?.value || ''
+    document.querySelectorAll('#ref-tbody .ref-row').forEach(function(row){
+      var txt = (row.dataset.company + ' ' + row.dataset.reward + ' ' + row.dataset.category).toLowerCase()
+      var match = !q || txt.includes(q)
+      var revMatch = !rev || row.dataset.review === rev
+      row.style.display = (match && revMatch) ? '' : 'none'
     })
   }
 
@@ -614,6 +649,28 @@ function renderDashboard(d: DashboardData): string {
       if (d.status === 'ok') {
         toast('Updated ' + d.updated + ' referrals', 'success')
         setTimeout(function(){ document.getElementById('btn-refresh').click() }, 800)
+      } else { toast(d.error || 'Failed', 'error') }
+    })
+  })
+
+  //---- referrals: approve / reject inline ----
+  document.getElementById('ref-tbody')?.addEventListener('click', function(e){
+    var btn = e.target.closest('.btn-approve') || e.target.closest('.btn-reject')
+    if (!btn) return
+    e.stopPropagation()
+    var id = btn.dataset.id
+    var isApprove = btn.classList.contains('btn-approve')
+    api('admin/referrals/' + id + '/review', {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({status: isApprove ? 'approved' : 'rejected'})
+    }).then(function(r){ return r.json() }).then(function(d){
+      if (d.status === 'ok') {
+        toast((isApprove ? 'Approved' : 'Rejected'), 'success')
+        var row = document.querySelector('.ref-row[data-id="' + id + '"]')
+        if (row) {
+          row.dataset.review = isApprove ? 'approved' : 'rejected'
+          doFilter()
+        }
       } else { toast(d.error || 'Failed', 'error') }
     })
   })
