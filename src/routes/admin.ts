@@ -83,6 +83,10 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
       workers,
       linkCoverage,
       brandCount,
+      reviewCounts,
+      uncategorised,
+      lowConfidence,
+      noReward,
     ] = await Promise.all([
       getHealthStats(),
       Promise.resolve(getDegradedFeeds()),
@@ -114,7 +118,23 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
         SELECT COUNT(DISTINCT company_name)::int AS count
         FROM referrals WHERE is_active = true AND company_name IS NOT NULL
       `),
+      pool.query<{ status: string; count: number }>(
+        `SELECT review_status AS status, COUNT(*)::int FROM referrals WHERE is_active = true
+         GROUP BY review_status ORDER BY status`,
+      ),
+      pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int FROM referrals WHERE is_active = true AND category IS NULL`,
+      ),
+      pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int FROM referrals WHERE is_active = true AND (confidence IS NULL OR confidence < 0.3)`,
+      ),
+      pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int FROM referrals WHERE is_active = true AND reward_numeric IS NULL AND reward_type = 'unknown'`,
+      ),
     ])
+
+    const rc: Record<string, number> = {}
+    for (const r of reviewCounts.rows) { rc[r.status] = r.count }
 
     const html = renderDashboard({
       totalActive: health.totalActive,
@@ -132,6 +152,10 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
       sources: sourceCounts.rows,
       referrals: recentReferrals.rows,
       workers: workers.rows,
+      reviewCounts: { pending: rc.pending ?? 0, approved: rc.approved ?? 0, needs_fix: rc.needs_fix ?? 0, rejected: rc.rejected ?? 0 },
+      uncategorised: uncategorised.rows[0]?.count ?? 0,
+      lowConfidence: lowConfidence.rows[0]?.count ?? 0,
+      noReward: noReward.rows[0]?.count ?? 0,
     })
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -159,23 +183,15 @@ interface DashboardData {
   sources: Array<{ source: string; count: number }>
   referrals: Array<Record<string, unknown>>
   workers: Array<Record<string, unknown>>
+  reviewCounts: { pending: number; approved: number; needs_fix: number; rejected: number }
+  uncategorised: number
+  lowConfidence: number
+  noReward: number
 }
 
 function renderDashboard(d: DashboardData): string {
   const lc = d.linkCoverage
   const linkPct = pct(lc.with_link, lc.total)
-
-  // Stats cards
-  const cards = [
-    { label: 'Active referrals', value: d.totalActive },
-    { label: 'Discovered today', value: d.discoveredToday },
-    { label: 'With referral link', value: `${linkPct}% (${lc.with_link}/${lc.total})` },
-    { label: 'Distinct brands', value: d.brands },
-  ]
-  let cardsHtml = ''
-  for (const c of cards) {
-    cardsHtml += `<div class="card"><div class="label">${esc(c.label)}</div><div class="value">${esc(c.value)}</div></div>`
-  }
 
   // Status row
   const queueColor = d.queuePending > 300 ? 'status-error' : d.queuePending > 100 ? 'status-warn' : 'status-ok'
@@ -219,39 +235,35 @@ function renderDashboard(d: DashboardData): string {
     const sourcesArr = (r.sources as string[]) ?? []
     const primarySource = sourcesArr[0] ?? 'unknown'
     const cat = (r.category as string) || '--'
+    const score = r.score != null ? Number(r.score).toFixed(2) : '--'
+    const scoreNum = parseFloat(score)
+    const scoreClass = score === '--' ? 'score-low' : scoreNum >= 0.7 ? 'score-high' : scoreNum >= 0.4 ? 'score-mid' : 'score-low'
+    const scorePct = score === '--' ? 0 : Math.round(scoreNum * 100)
+    const review = (r.review_status as string) || 'pending'
+    const revClass = review === 'approved' ? 'badge-approved' : review === 'rejected' ? 'badge-rejected' : review === 'needs_fix' ? 'badge-needsfix' : 'badge-pending'
+    const companyName = String(r.company_name ?? 'Unknown').replace(/"/g, '')
 
     const dataJson = JSON.stringify({
       id, source_url: r.source_url, domain: r.domain, referral_link: r.referral_link,
       company_name: r.company_name, offer_text: r.offer_text, reward: r.reward,
       reward_numeric: r.reward_numeric, currency: r.currency, friend_reward: r.friend_reward,
-      reward_type: r.reward_type, qualifying_spend: r.qualifying_spend, max_referrals: r.max_referrals,
-      score: r.score, engagement_score: r.engagement_score, sources: r.sources,
-      source_count: r.source_count, uk_signal_strength: r.uk_signal_strength,
-      discovered_at: r.discovered_at, last_verified_at: r.last_verified_at, expires_at: r.expires_at,
-      verification_failures: r.verification_failures, notes: r.notes, category: r.category,
-      is_active: r.is_active, change_type: r.change_type, review_status: r.review_status, confidence: r.confidence,
+      reward_type: r.reward_type, category: r.category, review_status: review, confidence: r.confidence,
+      score: r.score, sources: r.sources, discovered_at: r.discovered_at, notes: r.notes,
     }).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
 
-    const score = r.score != null ? String(Number(r.score).toFixed(2)) : '--'
-    const review = (r.review_status as string) || 'pending'
-    const revClass = review === 'approved' ? 'badge-approved' : review === 'rejected' ? 'badge-rejected' : review === 'needs_fix' ? 'badge-needsfix' : 'badge-pending'
-    const confidence = r.confidence != null ? String(Math.round(Number(r.confidence) * 100)) + '%' : '--'
-
-    referralRows += `<tr class="ref-row" data-id="${esc(id)}" data-json="${dataJson}" data-company="${esc(r.company_name)}" data-reward="${esc(r.reward)}" data-category="${esc(cat)}" data-review="${esc(review)}">
+    referralRows += `<tr class="ref-row" data-id="${esc(id)}" data-json="${dataJson}" data-company="${esc(companyName)}" data-reward="${esc(r.reward)}" data-category="${esc(cat)}" data-review="${esc(review)}">
       <td class="cb-col"><input type="checkbox" class="ref-checkbox" data-id="${esc(id)}"></td>
-      <td><a class="ref-link" href="${esc(r.source_url)}" target="_blank" rel="noopener">${esc(r.company_name)}</a></td>
+      <td><span class="ref-name" title="${esc(r.company_name ?? '')}"><a class="ref-link" href="${esc(r.source_url ?? '#')}" target="_blank" rel="noopener">${esc(companyName)}</a></span></td>
       <td>${esc(r.reward)}</td>
-      <td class="dim">${esc(cat)}</td>
-      <td>${score}</td>
-      <td>${confidence}</td>
+      <td class="dim center">${esc(cat === 'uncategorised' ? '--' : cat)}</td>
+      <td class="num"><span class="score-bar"><span class="${scoreClass}" style="width:${scorePct}%"></span></span>${score}</td>
+      <td class="center"><span class="badge ${revClass}">${esc(review)}</span></td>
       <td class="center">${linkIcon}</td>
       <td><span class="source-tag">${esc(primarySource)}</span></td>
-      <td class="dim" style="font-size:12px">${new Date(r.discovered_at as string).toLocaleString()}</td>
-      <td><span class="badge ${revClass}">${esc(review)}</span></td>
       <td class="actions-col">
         <button class="btn-sm btn-approve" data-id="${esc(id)}" title="Approve">&#10003;</button>
         <button class="btn-sm btn-reject" data-id="${esc(id)}" title="Reject">&#10007;</button>
-        <button class="btn-sm btn-edit" data-id="${esc(id)}">Edit</button>
+        <button class="btn-sm btn-edit" data-id="${esc(id)}" title="Edit">&#9998;</button>
       </td>
     </tr>`
   }
@@ -405,6 +417,21 @@ function renderDashboard(d: DashboardData): string {
 
   .ref-row{cursor:pointer}
 
+  .stat-alert{display:flex;gap:6px;align-items:center;font-size:12px;padding:4px 10px;border-radius:6px}
+  .stat-alert.warn{background:rgba(217,119,6,.08);color:#D97706}
+  .stat-alert.err{background:rgba(220,38,38,.08);color:#DC2626}
+  .stat-alert.ok{background:rgba(15,118,110,.08);color:#0F766E}
+  .quick-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .quick-filters button{font-size:11px;padding:3px 10px;border-radius:10px;border:1px solid #E2E8F0;background:#FFFFFF;color:#64748B;cursor:pointer;transition:all .15s}
+  .quick-filters button:hover{border-color:#0F766E;color:#0F766E}
+  .quick-filters button.active{background:#0F766E;color:#FFFFFF;border-color:#0F766E}
+  .score-bar{display:inline-block;width:40px;height:6px;border-radius:3px;background:#E2E8F0;vertical-align:middle;margin-right:4px}
+  .score-bar span{display:block;height:100%;border-radius:3px}
+  .score-high{background:#0F766E}
+  .score-mid{background:#D97706}
+  .score-low{background:#DC2626}
+  .ref-name{max-width:180px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+
   @media(max-width:768px){
     .side-panel{width:100%}
     .modal{width:95%;padding:16px}
@@ -432,7 +459,23 @@ function renderDashboard(d: DashboardData): string {
 
 <!-- OVERVIEW TAB -->
 <div class="tab-panel active" id="tab-overview">
-  <div class="grid">${cardsHtml}</div>
+  <div class="grid">
+    <div class="card"><div class="label">Active referrals</div><div class="value">${d.totalActive}</div></div>
+    <div class="card"><div class="label">Discovered today</div><div class="value">${d.discoveredToday}</div></div>
+    <div class="card"><div class="label">With link</div><div class="value">${linkPct}%</div></div>
+    <div class="card"><div class="label">Distinct brands</div><div class="value">${d.brands}</div></div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+    <span class="stat-alert ${d.reviewCounts.pending > 10 ? 'warn' : 'ok'}">&#9679; ${d.reviewCounts.pending} pending review</span>
+    <span class="stat-alert ok">&#9679; ${d.reviewCounts.approved} approved</span>
+    <span class="stat-alert ${d.reviewCounts.needs_fix > 0 ? 'err' : 'ok'}">&#9679; ${d.reviewCounts.needs_fix} needs fix</span>
+    ${d.uncategorised > 10 ? `<span class="stat-alert warn">&#9679; ${d.uncategorised} uncategorised</span>` : ''}
+    ${d.lowConfidence > 5 ? `<span class="stat-alert err">&#9679; ${d.lowConfidence} low confidence</span>` : ''}
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+    <button class="btn-sm" id="btn-auto-approve" style="border-color:#0F766E;color:#0F766E">Auto-Approve High Confidence (≥0.7)</button>
+    <span style="font-size:11px;color:#64748B">Approves all referrals with confidence ≥ 0.7 and proper company/reward data</span>
+  </div>
   <div>${statusRow}</div>
   <h3 style="margin:20px 0 10px;font-size:14px;font-weight:600;color:#1E293B">Category Breakdown</h3>
   ${d.categories.length === 0 ? '<p class="empty">No categories yet.</p>' : categoryHtml}
@@ -443,7 +486,14 @@ function renderDashboard(d: DashboardData): string {
 <!-- REFERRALS TAB -->
 <div class="tab-panel" id="tab-referrals">
   <div class="toolbar">
-    <input type="text" id="ref-search" placeholder="Search referrals...">
+    <div class="quick-filters">
+      <button class="active" data-filter="all">All</button>
+      <button data-filter="pending">Pending</button>
+      <button data-filter="needs_fix">Needs Fix</button>
+      <button data-filter="uncategorised">Uncategorised</button>
+      <button data-filter="low_confidence">Low Confidence</button>
+    </div>
+    <input type="text" id="ref-search" placeholder="Search...">
     <select id="batch-category">
       <option value="">Batch categorise…</option>
       <option value="banking">Banking</option>
@@ -459,19 +509,13 @@ function renderDashboard(d: DashboardData): string {
       <option value="other">Other</option>
       <option value="spam">Spam</option>
     </select>
-    <select id="review-filter">
-      <option value="">All reviews</option>
-      <option value="pending">Pending</option>
-      <option value="needs_fix">Needs Fix</option>
-      <option value="approved">Approved</option>
-      <option value="rejected">Rejected</option>
-    </select>
     <button class="btn-sm" id="btn-categorise">Categorise</button>
+    <button class="btn-sm" id="btn-approve-selected" style="border-color:#0F766E;color:#0F766E">Approve Selected</button>
   </div>
   ${d.referrals.length === 0
     ? '<p class="empty">No referrals yet.</p>'
     : `<div style="overflow-x:auto"><table>
-    <thead><tr><th class="cb-col"><input type="checkbox" id="select-all"></th><th>Company</th><th>Reward</th><th>Category</th><th>Score</th><th>Conf</th><th class="center">Link</th><th>Source</th><th>Discovered</th><th>Review</th><th class="actions-col"></th></tr></thead>
+    <thead><tr><th class="cb-col"><input type="checkbox" id="select-all"></th><th>Company</th><th>Reward</th><th class="center">Cat</th><th class="num">Score</th><th class="center">Review</th><th class="center">Link</th><th>Source</th><th class="actions-col"></th></tr></thead>
     <tbody id="ref-tbody">${referralRows}</tbody></table></div>`}
 </div>
 
@@ -604,26 +648,36 @@ function renderDashboard(d: DashboardData): string {
     })
   })
 
+  //---- quick filters ----
+  document.querySelectorAll('.quick-filters button').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.quick-filters button').forEach(function(b){ b.classList.remove('active') })
+      btn.classList.add('active')
+      var filter = btn.dataset.filter
+      document.querySelectorAll('#ref-tbody .ref-row').forEach(function(row){
+        var show = true
+        if (filter === 'pending') show = row.dataset.review === 'pending'
+        else if (filter === 'needs_fix') show = row.dataset.review === 'needs_fix'
+        else if (filter === 'uncategorised') show = row.dataset.category === '--' || row.dataset.category === 'uncategorised'
+        else if (filter === 'low_confidence') {
+          try { var d = JSON.parse(row.dataset.json.replace(/&quot;/g,'"').replace(/&amp;/g,'&')); show = d.confidence === null || d.confidence < 0.3 }
+          catch(_){ show = false }
+        }
+        row.style.display = show ? '' : 'none'
+      })
+    })
+  })
+
   //---- referrals: search ----
   var refSearch = document.getElementById('ref-search')
   if (refSearch) {
-    refSearch.addEventListener('input', doFilter)
-  }
-
-  //---- referrals: review status filter ----
-  var reviewFilter = document.getElementById('review-filter')
-  if (reviewFilter) {
-    reviewFilter.addEventListener('change', doFilter)
-  }
-
-  function doFilter() {
-    var q = (refSearch?.value || '').toLowerCase()
-    var rev = reviewFilter?.value || ''
-    document.querySelectorAll('#ref-tbody .ref-row').forEach(function(row){
-      var txt = (row.dataset.company + ' ' + row.dataset.reward + ' ' + row.dataset.category).toLowerCase()
-      var match = !q || txt.includes(q)
-      var revMatch = !rev || row.dataset.review === rev
-      row.style.display = (match && revMatch) ? '' : 'none'
+    refSearch.addEventListener('input', function(){
+      var q = refSearch.value.toLowerCase()
+      document.querySelectorAll('#ref-tbody .ref-row:not([style*="none"])').forEach(function(row){
+        if (row.style.display === 'none') return
+        var txt = (row.dataset.company + ' ' + row.dataset.reward + ' ' + row.dataset.category).toLowerCase()
+        row.style.display = txt.includes(q) ? '' : 'none'
+      })
     })
   }
 
@@ -653,6 +707,34 @@ function renderDashboard(d: DashboardData): string {
     })
   })
 
+  //---- referrals: batch approve selected ----
+  document.getElementById('btn-approve-selected')?.addEventListener('click', function(){
+    var ids = []
+    document.querySelectorAll('.ref-checkbox:checked').forEach(function(cb){ ids.push(cb.dataset.id) })
+    if (ids.length === 0) { toast('Select referrals first', 'error'); return }
+    Promise.all(ids.map(function(id){
+      return api('admin/referrals/' + id + '/review', {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({status: 'approved'})
+      }).then(function(r){ return r.json() })
+    })).then(function(){
+      toast('Approved ' + ids.length + ' referrals', 'success')
+      setTimeout(function(){ document.getElementById('btn-refresh').click() }, 600)
+    })
+  })
+
+  //---- auto-approve high confidence ----
+  document.getElementById('btn-auto-approve')?.addEventListener('click', function(){
+    if (!confirm('Auto-approve all high-confidence referrals?')) return
+    api('admin/referrals/auto-approve', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({min_confidence: 0.7})
+    }).then(function(r){ return r.json() }).then(function(d){
+      if (d.status === 'ok') { toast('Auto-approved ' + d.approved + ' referrals', 'success'); setTimeout(function(){ document.getElementById('btn-refresh').click() }, 600) }
+      else { toast(d.error || 'Failed', 'error') }
+    })
+  })
+
   //---- referrals: approve / reject inline ----
   document.getElementById('ref-tbody')?.addEventListener('click', function(e){
     var btn = e.target.closest('.btn-approve') || e.target.closest('.btn-reject')
@@ -660,16 +742,20 @@ function renderDashboard(d: DashboardData): string {
     e.stopPropagation()
     var id = btn.dataset.id
     var isApprove = btn.classList.contains('btn-approve')
+    var row = btn.closest('.ref-row')
     api('admin/referrals/' + id + '/review', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({status: isApprove ? 'approved' : 'rejected'})
     }).then(function(r){ return r.json() }).then(function(d){
       if (d.status === 'ok') {
         toast((isApprove ? 'Approved' : 'Rejected'), 'success')
-        var row = document.querySelector('.ref-row[data-id="' + id + '"]')
         if (row) {
           row.dataset.review = isApprove ? 'approved' : 'rejected'
-          doFilter()
+          var badge = row.querySelector('.badge')
+          if (badge) {
+            badge.textContent = isApprove ? 'approved' : 'rejected'
+            badge.className = 'badge ' + (isApprove ? 'badge-approved' : 'badge-rejected')
+          }
         }
       } else { toast(d.error || 'Failed', 'error') }
     })
