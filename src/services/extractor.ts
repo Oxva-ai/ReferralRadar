@@ -71,9 +71,17 @@ const PATTERN_FALLBACK = [
 // --- Group 9: Referral code/link patterns (from raw HTML) ---
 const REFERRAL_LINK_PATTERNS = [
   /href=["']([^"']*(?:\/?\?.*(?:ref|referral|code|r|invite|friend)=[^"'\s]+))["']/gi,
-  /(?:referral\s+code|share\s+this\s+link|your\s+unique\s+link)\s*[:：]\s*([^\s<"]+)/gi,
-  /https?:\/\/[^\s"'<>]+\/(?:refer|invite)\/[A-Za-z0-9_-]{4,}/gi,
-  /(?:go\.|gr\.|lnk\.)\/[A-Za-z0-9_-]{4,}/gi,
+  /(?:referral\s+code|share\s+this\s+link|your\s+unique\s+link|your referral link|referral link)\s*[:：=]\s*([^\s<"]+)/gi,
+  /(https?:\/\/[^\s"'<>]+\/(?:refer|invite)\/[A-Za-z0-9_-]{4,})/gi,
+  /((?:go\.|gr\.|lnk\.|ref\.|my\.|get\.|use\.|join\.)\/[A-Za-z0-9_-]{4,})/gi,
+  /href=["']([^"']*(?:\/refer\?|\/referral\?)[^"']*)["']/gi,
+  /data-referral-link=["']([^"']+)["']/gi,
+  /data-ref=["']([^"']*(?:\/?(?:refer|invite|share|earn)\b)[^"']*)["']/gi,
+  /onclick=["'][^"']*(https?:\/\/[^"'\s]*(?:ref|referral|invite|code|share)[^"'\s]*)[^"']*["']/gi,
+  /href=["']([^"']*(?:\/(?:refer|invite|share|earn)(?:\/[A-Za-z0-9_-]+|\?|#|$))[^"']*)["']/gi,
+  /(https?:\/\/(?:bit\.ly|tinyurl\.com|t\.co|ow\.ly|buff\.ly|is\.gd|cutt\.ly|rebrand\.ly|short\.link|click\.link)\/[^\s"'<>]+)/gi,
+  /(?:window\.)?location\.(?:href|assign)\s*=\s*["']([^"']*(?:ref|referral|invite|code)[^"']*)["']/gi,
+  /navigator\.(?:clipboard\.writeText|share)\s*\(\s*["']([^"']+)["']/gi,
 ]
 
 export function extractText($: cheerio.CheerioAPI): string {
@@ -136,15 +144,63 @@ export function splitOffers(text: string): string[] {
   return [text]
 }
 
-function extractReferralLink($: cheerio.CheerioAPI): string | null {
-  const html = $.html()
+function extractReferralLinkFromRaw(html: string): string | null {
   const matched: string[] = []
 
   for (const pattern of REFERRAL_LINK_PATTERNS) {
     pattern.lastIndex = 0
     let match
     while ((match = pattern.exec(html)) !== null) {
-      const link = match[1]?.trim()
+      const link = (match[1] || match[0])?.trim()
+      if (link && link.length >= 4 && !matched.includes(link)) {
+        matched.push(link)
+      }
+    }
+  }
+
+  return matched[0] ?? null
+}
+
+function extractReferralLinkFromScripts(rawHtml: string): string | null {
+  const scriptRegex = /<script\b[^>]*>([\s\S]*?)<\/script>/gi
+  let scriptMatch
+  const matched: string[] = []
+
+  while ((scriptMatch = scriptRegex.exec(rawHtml)) !== null) {
+    const content = scriptMatch[1]
+    if (!content || content.length < 10) continue
+
+    const constVarPatterns = [
+      /(?:const|let|var)\s+(?:\w*[Rr]eferral\w*|\w*[Rr]ef\w*|\w*[Ii]nvite\w*|\w*[Ss]hare\w*)\s*=\s*["']([^"']{10,})["']/g,
+      /(?:const|let|var)\s+\w+\s*=\s*["']([^"']*(?:ref=|referral=|invite=|code=)[^"']*)["']/g,
+    ]
+
+    for (const p of constVarPatterns) {
+      p.lastIndex = 0
+      let cm
+      while ((cm = p.exec(content)) !== null) {
+        const link = cm[1]
+        if (link && !matched.includes(link)) {
+          matched.push(link)
+        }
+      }
+    }
+
+    const clipboardPattern = /navigator\.clipboard\.writeText\s*\(\s*["']([^"']{10,})["']\s*\)/g
+    clipboardPattern.lastIndex = 0
+    let cpm
+    while ((cpm = clipboardPattern.exec(content)) !== null) {
+      const link = cpm[1]
+      if (link && !matched.includes(link)) {
+        matched.push(link)
+      }
+    }
+
+    const urlPattern = /["'](https?:\/\/[^"']*(?:ref=|referral=|invite=|code=|ref%3D|referral%3D)[^"']*)["']/gi
+    urlPattern.lastIndex = 0
+    let um
+    while ((um = urlPattern.exec(content)) !== null) {
+      const link = um[1]
       if (link && !matched.includes(link)) {
         matched.push(link)
       }
@@ -152,6 +208,33 @@ function extractReferralLink($: cheerio.CheerioAPI): string | null {
   }
 
   return matched[0] ?? null
+}
+
+function extractReferralLinkFromMeta(rawHtml: string): string | null {
+  const metaRegex = /<meta\b[^>]*>/gi
+  let metaMatch
+
+  while ((metaMatch = metaRegex.exec(rawHtml)) !== null) {
+    const tag = metaMatch[0]
+    if (!tag) continue
+
+    const ogUrl = tag.match(/(?:property|name)=["']og:url["']\s+content=["']([^"']+)["']/i)
+      ?? tag.match(/content=["']([^"']+)["']\s+(?:property|name)=["']og:url["']/i)
+    if (ogUrl?.[1] && /[?&](?:ref|referral|invite|code|r)=/.test(ogUrl[1])) {
+      return ogUrl[1]
+    }
+
+    const twitterUrl = tag.match(/(?:property|name)=["']twitter:url["']\s+content=["']([^"']+)["']/i)
+      ?? tag.match(/content=["']([^"']+)["']\s+(?:property|name)=["']twitter:url["']/i)
+    if (twitterUrl?.[1] && /[?&](?:ref|referral|invite|code|r)=/.test(twitterUrl[1])) {
+      return twitterUrl[1]
+    }
+
+    const contentMatch = tag.match(/content=["']([^"']*(?:ref(?:err?al)?=|invite=|code=|r=|referral\/|\/(?:refer|invite|share|earn)\/)[^"']*)["']/i)
+    if (contentMatch?.[1]) return contentMatch[1]
+  }
+
+  return null
 }
 
 function extractReward(text: string): {
@@ -326,7 +409,9 @@ export async function extract(html: string, url: string): Promise<ExtractionResu
     }
 
     const companyName = extractCompanyName($, url)
-    const referralLink = extractReferralLink($)
+    const referralLink = extractReferralLinkFromRaw(html)
+      ?? extractReferralLinkFromScripts(html)
+      ?? extractReferralLinkFromMeta(html)
     const extraction = extractReward(text)
     const qualifyingSpend = extractQualifyingSpend(text)
 

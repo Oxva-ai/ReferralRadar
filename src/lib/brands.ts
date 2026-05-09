@@ -91,6 +91,7 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'Shopmium', domain: 'shopmium.com', category: 'shopping' },
   { name: 'GreenJinn', domain: 'greenjinn.com', category: 'shopping' },
   { name: 'CheckoutSmart', domain: 'checkoutsmart.com', category: 'shopping' },
+  { name: 'Freesmo', domain: 'freesmo.co.uk', category: 'shopping' },
   { name: 'JamDoughnut', domain: 'jamdoughnut.com', category: 'shopping' },
   { name: 'Airtime Rewards', domain: 'airtimerewards.com', category: 'shopping' },
   { name: 'Cheddar', domain: 'cheddar.me', category: 'shopping' },
@@ -100,6 +101,8 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'Vinted', domain: 'vinted.co.uk', category: 'shopping' },
   { name: 'Depop', domain: 'depop.com', category: 'shopping' },
   { name: 'eBay UK', domain: 'ebay.co.uk', category: 'shopping' },
+  { name: 'Whatnot', domain: 'whatnot.com', category: 'shopping' },
+  { name: 'Wowcher', domain: 'wowcher.co.uk', category: 'shopping' },
 
   // === ENERGY ===
   { name: 'Octopus Energy', domain: 'octopus.energy', category: 'utilities' },
@@ -116,6 +119,8 @@ export const UK_BRANDS: UkBrand[] = [
   // === BROADBAND & MOBILE ===
   { name: 'Virgin Media', domain: 'virginmedia.com', category: 'utilities' },
   { name: 'Sky', domain: 'sky.com', category: 'utilities' },
+  { name: 'Airband', domain: 'airband.co.uk', category: 'utilities' },
+  { name: 'BeFibre', domain: 'befibre.com', category: 'utilities' },
   { name: 'BT', domain: 'bt.com', category: 'utilities' },
   { name: 'EE', domain: 'ee.co.uk', category: 'utilities' },
   { name: 'Three', domain: 'three.co.uk', category: 'utilities' },
@@ -129,8 +134,10 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'TalkTalk', domain: 'talktalk.co.uk', category: 'utilities' },
   { name: 'Plusnet', domain: 'plus.net', category: 'utilities' },
   { name: 'Hyperoptic', domain: 'hyperoptic.com', category: 'utilities' },
+  { name: 'iD Mobile', domain: 'idmobile.co.uk', category: 'utilities' },
   { name: 'Community Fibre', domain: 'communityfibre.co.uk', category: 'utilities' },
   { name: 'Zen Internet', domain: 'zen.co.uk', category: 'utilities' },
+  { name: 'Zzoomm', domain: 'zzoomm.com', category: 'utilities' },
 
   // === INSURANCE ===
   { name: 'Marmalade', domain: 'wearemarmalade.co.uk', category: 'insurance' },
@@ -185,6 +192,7 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'Smol', domain: 'smolproducts.com', category: 'other' },
   { name: 'Who Gives A Crap', domain: 'whogivesacrap.org', category: 'other' },
   { name: 'Wild Deodorant', domain: 'wearewild.com', category: 'other' },
+  { name: 'Freecash', domain: 'freecash.com', category: 'other' },
   { name: 'Fussy', domain: 'getfussy.com', category: 'other' },
   { name: 'Grind Coffee', domain: 'grind.co.uk', category: 'food' },
   { name: 'Pact Coffee', domain: 'pactcoffee.com', category: 'food' },
@@ -192,7 +200,10 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'Freddie Flowers', domain: 'freddiesflowers.com', category: 'other' },
   { name: 'Bloom & Wild', domain: 'bloomandwild.com', category: 'other' },
   { name: 'Arena Flowers', domain: 'arenaflowers.com', category: 'other' },
+  { name: 'Atom Games', domain: 'playatom.co.uk', category: 'other' },
+  { name: 'Blaze Competitions', domain: 'blazecompetitions.co.uk', category: 'other' },
   { name: 'Moonpig', domain: 'moonpig.com', category: 'other' },
+  { name: 'Prolific', domain: 'prolific.com', category: 'other' },
   { name: 'Funky Pigeon', domain: 'funkypigeon.com', category: 'other' },
   { name: 'Not On The High Street', domain: 'notonthehighstreet.com', category: 'shopping' },
   { name: 'Etsy UK', domain: 'etsy.com', category: 'shopping' },
@@ -213,6 +224,7 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'Betfair', domain: 'betfair.com', category: 'gambling' },
   { name: 'William Hill', domain: 'williamhill.com', category: 'gambling' },
   { name: 'Ladbrokes', domain: 'ladbrokes.com', category: 'gambling' },
+  { name: 'MrQ', domain: 'mrq.com', category: 'gambling' },
   { name: 'Coral', domain: 'coral.co.uk', category: 'gambling' },
   { name: 'Sky Bet', domain: 'skybet.com', category: 'gambling' },
   { name: '888sport', domain: '888sport.com', category: 'gambling' },
@@ -226,13 +238,16 @@ export const UK_BRANDS: UkBrand[] = [
   { name: 'GoHenry', domain: 'gohenry.com', category: 'finance' },
   { name: 'Nimbl', domain: 'nimbl.com', category: 'finance' },
   { name: 'HyperJar', domain: 'hyperjar.com', category: 'finance' },
+  { name: 'Klarna', domain: 'klarna.com', category: 'finance' },
   { name: 'Monese', domain: 'monese.com', category: 'banking' },
   { name: 'Snoop', domain: 'snoop.app', category: 'finance' },
   { name: 'Moneyhub', domain: 'moneyhub.com', category: 'finance' },
   { name: 'Emma', domain: 'emma-app.com', category: 'finance' },
   { name: 'Chip', domain: 'chip.uk', category: 'finance' },
+  { name: 'CreditSpring', domain: 'creditspring.co.uk', category: 'finance' },
   { name: 'Cleo', domain: 'cleo.com', category: 'finance' },
   { name: 'Loot', domain: 'loot.io', category: 'finance' },
+  { name: 'Tembo Money', domain: 'tembomoney.com', category: 'finance' },
 ]
 
 // Build lookup maps

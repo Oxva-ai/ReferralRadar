@@ -6,6 +6,7 @@ import { pool } from './db/pool.js'
 import * as scheduler from './workers/scheduler.js'
 import { run as searchWorker } from './workers/search.js'
 import { run as redditWorker, runTertiary as redditTertiaryWorker } from './workers/reddit.js'
+import { run as brandSearchWorker } from './workers/brand-search.js'
 import { run as competitorWorker } from './workers/competitor.js'
 import { run as rssWorker, runSecondary as rssSecondaryWorker, runTertiary as rssTertiaryWorker } from './workers/rss.js'
 import { run as pageMonitorWorker } from './workers/page-monitor.js'
@@ -23,6 +24,9 @@ async function main() {
 
   // Phase 1: Google CSE
   scheduler.schedule('*/8 * * * *', 'search', searchWorker)
+
+  // Brand-targeted search (every 15 min)
+  scheduler.schedule('*/15 * * * *', 'brand-search', brandSearchWorker)
 
   // Phase 2: Reddit (primary)
   scheduler.schedule('*/15 * * * *', 'reddit', redditWorker)
