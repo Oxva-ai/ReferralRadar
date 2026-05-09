@@ -2,17 +2,39 @@ import * as cheerio from 'cheerio'
 import { logger } from '../logger.js'
 import { BRAND_BY_DOMAIN, UK_BRANDS } from '../lib/brands.js'
 
+const JUNK_COMPANY_PATTERNS = /^(refer\s+a\s+friend|referral|get\s+a?\s*referral|sign\s*up|join|home|welcome|invite|free|coupon|voucher|promo|discount|offer|reward|refer|codes?|links?)/i
+
+function stripReferralSuffix(name: string): string {
+  return name
+    .replace(/\s*[|–—·»]\s*(refer\s+a\s+friend|sign\s*up|offer|free|code|promo|discount|voucher|coupon|referral|invite|reward|bonus|cashback).*$/i, '')
+    .replace(/\s*[-–]\s*(refer\s+a\s+friend|sign\s*up|offer|referral|invite|friends?).*$/i, '')
+    .replace(/\s+\d{4}\s*$/g, '')
+    .replace(/\s*[\([🔗]](?:UK|2024|2025|2026)[\)\]]?\s*$/gi, '')
+    .trim()
+}
+
 export interface ExtractionResult {
   companyName: string | null
   offerText: string | null
   reward: string | null
   rewardNumeric: number | null
-  friendReward: string | null
+  friendReward: string | null   // keep for backward compat
+  refereeReward: string | null  // what the friend/referree actually gets
+  referrerReward: string | null // what the referrer gets
+  offerSummary: string | null   // human-readable summary
+  referralCode: string | null   // extracted code from URL params
   rewardType: 'per_referral' | 'dual' | 'capped' | 'free_product' | 'free_share' | 'switching_bonus' | 'percentage' | 'signup_credit' | 'image_text' | 'unknown'
   currency: string
   referralLink: string | null
   qualifyingSpend: string | null
   maxReferrals: number | null
+  termsUrl: string | null       // link to T&Cs
+  expiresAt: string | null      // detected expiry date as ISO string
+  isInstant: boolean            // signup credit = instant
+  isNoId: boolean               // no ID verification needed
+  isGambling: boolean           // gambling domain
+  requiresSpending: boolean     // has qualifying_spend
+  confidence: number | null     // 0-1 score based on signal strength
   multiOfferSegments: string[]
 }
 
@@ -83,6 +105,17 @@ const REFERRAL_LINK_PATTERNS = [
   /(https?:\/\/(?:bit\.ly|tinyurl\.com|t\.co|ow\.ly|buff\.ly|is\.gd|cutt\.ly|rebrand\.ly|short\.link|click\.link)\/[^\s"'<>]+)/gi,
   /(?:window\.)?location\.(?:href|assign)\s*=\s*["']([^"']*(?:ref|referral|invite|code)[^"']*)["']/gi,
   /navigator\.(?:clipboard\.writeText|share)\s*\(\s*["']([^"']+)["']/gi,
+]
+
+const TERMS_URL_PATTERNS = [
+  /href=["']([^"']*(?:terms|conditions|tandc|t&c|tc|legal)[^"']*)["']/gi,
+  /(?:terms\s+(?:and\s+)?conditions|T&Cs|full\s+terms)\s*(?::|–|—)?\s*(https?:\/\/[^\s<"']+)/gi,
+]
+
+const EXPIRY_PATTERNS = [
+  /(?:offer\s+)?(?:expires?|ends?|valid\s+(?:until|till|through)|closes?)\s*(?::|–|—)?\s*(\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})/i,
+  /(?:offer\s+)?(?:expires?|ends?|valid\s+(?:until|till|through)|closes?)\s*(?::|–|—)?\s*(\d{1,2}\/\d{1,2}\/\d{4})/i,
+  /(?:offer\s+)?(?:expires?|ends?|valid\s+(?:until|till|through)|closes?)\s*(?::|–|—)?\s*(\d{4}-\d{2}-\d{2})/i,
 ]
 
 export function extractText($: cheerio.CheerioAPI): string {
@@ -156,29 +189,100 @@ export function extractCompanyName($: cheerio.CheerioAPI, url: string): string {
 
   // 2. og:site_name
   const ogSite = $('meta[property="og:site_name"]').attr('content')
-  if (ogSite && ogSite.length > 2 && ogSite.length < 60) return ogSite.trim()
+  if (ogSite && ogSite.length > 2 && ogSite.length < 60 && !JUNK_COMPANY_PATTERNS.test(ogSite)) {
+    return ogSite.trim()
+  }
 
-  // 3. Title with pipe separator — try each part against brand list
+  // 3. h1 heading
+  const h1 = $('h1').first().text().trim()
+  if (h1 && h1.length > 2 && h1.length < 80 && !JUNK_COMPANY_PATTERNS.test(h1)) {
+    const cleaned = stripReferralSuffix(h1)
+    if (cleaned.length > 2) return cleaned
+  }
+
+  // 4. Title with separators
   const title = $('title').text().trim()
   if (title && title.length > 2) {
-    const parts = title.split(/[|\-–—]/)
+    const parts = title.split(/[|–—·»::]/)
     for (const part of parts) {
       const clean = part.trim()
       const brand = UK_BRANDS.find(b => b.name.toLowerCase() === clean.toLowerCase())
       if (brand) return brand.name
     }
 
-    // No brand match — use cleaned first part
-    const first = parts[0]!.trim()
-      .replace(/(?:referral|sign\s*up|offer|free|code|promo|discount|voucher|coupon)/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-    if (first.length > 2 && first.length < 60) return first
+    const first = stripReferralSuffix(parts[0]!.trim())
+    if (first.length > 2 && first.length < 60 && !JUNK_COMPANY_PATTERNS.test(first)) {
+      return first
+    }
   }
 
-  // 4. Fallback to clean domain name
+  // 5. Fallback to brand list by domain
+  if (hostname) {
+    const brand = BRAND_BY_DOMAIN[hostname]
+    if (brand) return brand.name
+  }
+
+  // 6. Cleaned domain name
   if (hostname) return cleanDomainName(hostname)
   return url
+}
+
+function extractReferralCode(text: string, referralLink: string | null): string | null {
+  // First check the referral link for code params
+  if (referralLink) {
+    try {
+      const url = new URL(referralLink)
+      const codeParams = ['ref', 'referral', 'code', 'r', 'invite', 'friend', 'raf']
+      for (const param of codeParams) {
+        const val = url.searchParams.get(param)
+        if (val && val.length >= 4 && val.length <= 64) return val
+      }
+    } catch { /* not a valid URL */ }
+  }
+
+  // Check offer text for inline codes
+  const codePatterns = [
+    /(?:referral\s+code|invite\s+code|promo\s+code|code)\s*(?::|–|—)?\s*["'`]?([A-Za-z0-9_-]{4,20})["'`]?/i,
+    /(?:use\s+(?:code|link)\s+["'`]?([A-Za-z0-9_-]{4,20})["'`]?)/i,
+  ]
+  for (const pattern of codePatterns) {
+    const match = text.match(pattern)
+    if (match?.[1]) return match[1].trim()
+  }
+
+  return null
+}
+
+function generateOfferSummary(
+  rewardType: ExtractionResult['rewardType'],
+  reward: string | null,
+  referrerReward: string | null,
+  refereeReward: string | null,
+  qualifyingSpend: string | null,
+  maxReferrals: number | null,
+): string | null {
+  if (!reward && !referrerReward) return null
+
+  const parts: string[] = []
+
+  if (referrerReward && refereeReward && referrerReward !== refereeReward) {
+    parts.push(`You get ${referrerReward}, your friend gets ${refereeReward}`)
+  } else if (referrerReward && refereeReward) {
+    parts.push(`Both get ${referrerReward}`)
+  } else if (referrerReward) {
+    parts.push(`You get ${referrerReward}`)
+  } else if (reward) {
+    parts.push(`Earn ${reward}`)
+  }
+
+  if (maxReferrals) {
+    parts.push(`(max ${maxReferrals} referrals)`)
+  }
+  if (qualifyingSpend) {
+    parts.push(`with ${qualifyingSpend}`)
+  }
+
+  return parts.length > 0 ? parts.join(' ') : null
 }
 
 export function splitOffers(text: string): string[] {
@@ -287,12 +391,16 @@ function extractReward(text: string): {
   reward: string | null
   rewardNumeric: number | null
   friendReward: string | null
+  refereeReward: string | null
+  referrerReward: string | null
   rewardType: ExtractionResult['rewardType']
   maxReferrals: number | null
 } {
   let reward: string | null = null
   let rewardNumeric: number | null = null
   let friendReward: string | null = null
+  let refereeReward: string | null = null
+  let referrerReward: string | null = null
   let rewardType: ExtractionResult['rewardType'] = 'unknown'
   let maxReferrals: number | null = null
 
@@ -304,14 +412,18 @@ function extractReward(text: string): {
         reward = match[1]
         rewardNumeric = parseFloat(reward.replace(/[^0-9.]/g, ''))
         friendReward = match[2]
+        referrerReward = match[1]
+        refereeReward = match[2]
         rewardType = 'dual'
-        return { reward, rewardNumeric, friendReward, rewardType, maxReferrals }
+        return { reward, rewardNumeric, friendReward, refereeReward, referrerReward, rewardType, maxReferrals }
       }
       reward = match[1]!
       rewardNumeric = parseFloat(reward.replace(/[^0-9.]/g, ''))
       friendReward = match[1]!
+      referrerReward = match[1]!
+      refereeReward = match[1]!
       rewardType = 'dual'
-      return { reward, rewardNumeric, friendReward, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward, refereeReward, referrerReward, rewardType, maxReferrals }
     }
   }
 
@@ -321,8 +433,9 @@ function extractReward(text: string): {
     if (match) {
       reward = match[1]!
       rewardNumeric = parseFloat(reward.replace(/[^0-9.]/g, ''))
+      referrerReward = match[1]!
       rewardType = 'per_referral'
-      return { reward, rewardNumeric, friendReward: null, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward: null, refereeReward: null, referrerReward, rewardType, maxReferrals }
     }
   }
 
@@ -333,7 +446,7 @@ function extractReward(text: string): {
       reward = match[0]
       rewardNumeric = 10 // Default estimated value for free products
       rewardType = match[0].includes('share') ? 'free_share' : 'free_product'
-      return { reward, rewardNumeric, friendReward: null, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward: null, refereeReward: null, referrerReward: null, rewardType, maxReferrals }
     }
   }
 
@@ -348,7 +461,7 @@ function extractReward(text: string): {
         reward = gbpMatch[0]
         rewardNumeric = parseFloat(gbpMatch[1]!)
       }
-      return { reward, rewardNumeric, friendReward: null, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward: null, refereeReward: null, referrerReward: null, rewardType, maxReferrals }
     }
   }
 
@@ -359,7 +472,7 @@ function extractReward(text: string): {
       reward = match[0]
       rewardNumeric = parseFloat(match[1]!) // The percentage value
       rewardType = 'percentage'
-      return { reward, rewardNumeric, friendReward: null, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward: null, refereeReward: null, referrerReward: null, rewardType, maxReferrals }
     }
   }
 
@@ -372,7 +485,7 @@ function extractReward(text: string): {
         reward = match[1]
         rewardNumeric = parseFloat(reward.replace(/[^0-9.]/g, ''))
       }
-      return { reward, rewardNumeric, friendReward: null, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward: null, refereeReward: null, referrerReward: null, rewardType, maxReferrals }
     }
   }
 
@@ -398,7 +511,7 @@ function extractReward(text: string): {
   }
 
   if (cappedReward || cappedMax) {
-    return { reward: cappedReward, rewardNumeric: cappedNumeric, friendReward: null, rewardType: 'capped', maxReferrals: cappedMax }
+    return { reward: cappedReward, rewardNumeric: cappedNumeric, friendReward: null, refereeReward: null, referrerReward: null, rewardType: 'capped', maxReferrals: cappedMax }
   }
 
   // Fallback: any GBP amount
@@ -408,11 +521,11 @@ function extractReward(text: string): {
       reward = match[0]
       rewardNumeric = parseFloat(match[1]!)
       rewardType = 'per_referral'
-      return { reward, rewardNumeric, friendReward: null, rewardType, maxReferrals }
+      return { reward, rewardNumeric, friendReward: null, refereeReward: null, referrerReward: null, rewardType, maxReferrals }
     }
   }
 
-  return { reward: null, rewardNumeric: null, friendReward: null, rewardType: 'unknown', maxReferrals: null }
+  return { reward: null, rewardNumeric: null, friendReward: null, refereeReward: null, referrerReward: null, rewardType: 'unknown', maxReferrals: null }
 }
 
 function extractQualifyingSpend(text: string): string | null {
@@ -487,17 +600,84 @@ export async function extract(html: string, url: string): Promise<ExtractionResu
     // Multi-offer splitting
     const segments = text.length > 2000 ? splitOffers(text) : [text]
 
+    // Extract referral code
+    const referralCode = extractReferralCode(text, referralLink)
+
+    // Extract terms URL
+    let termsUrl: string | null = null
+    let hostname = ''
+    try { hostname = new URL(url).hostname } catch { /* ignore */ }
+    for (const pattern of TERMS_URL_PATTERNS) {
+      pattern.lastIndex = 0
+      const match = pattern.exec(html)
+      if (match?.[1]) {
+        termsUrl = match[1].startsWith('http') ? match[1] : `https://${hostname}${match[1]}`
+        break
+      }
+    }
+
+    // Extract expiry
+    let expiresAt: string | null = null
+    for (const pattern of EXPIRY_PATTERNS) {
+      const match = text.match(pattern)
+      if (match?.[1]) {
+        const parsed = new Date(match[1])
+        if (!isNaN(parsed.getTime())) {
+          expiresAt = parsed.toISOString()
+        }
+        break
+      }
+    }
+
+    // Boolean heuristics
+    const isInstant = extraction.rewardType === 'signup_credit' || /instant/i.test(text)
+    const isNoId = !!/\bcode\b/i.test(text) || !!referralCode
+    const isGambling = /bet|casino|gambl|poker|slot/i.test(text)
+    const requiresSpending = qualifyingSpend !== null
+
+    // Confidence score based on signal quality
+    const confidence = (() => {
+      let score = 0
+      if (extraction.rewardNumeric !== null && extraction.rewardNumeric > 0) score += 0.4
+      if (referralLink) score += 0.2
+      if (referralCode) score += 0.1
+      if (companyName && companyName.length > 2 && !JUNK_COMPANY_PATTERNS.test(companyName)) score += 0.2
+      if (extraction.rewardType !== 'unknown') score += 0.1
+      return Math.min(score, 1)
+    })()
+
+    // Generate offer summary
+    const offerSummary = generateOfferSummary(
+      extraction.rewardType,
+      extraction.reward,
+      extraction.referrerReward,
+      extraction.refereeReward,
+      qualifyingSpend,
+      extraction.maxReferrals,
+    )
+
     return {
       companyName,
       offerText,
       reward: extraction.reward,
       rewardNumeric: extraction.rewardNumeric,
       friendReward: extraction.friendReward,
+      refereeReward: extraction.refereeReward,
+      referrerReward: extraction.referrerReward,
+      offerSummary,
+      referralCode,
       rewardType: extraction.rewardType,
       currency: 'GBP',
       referralLink,
       qualifyingSpend,
       maxReferrals: extraction.maxReferrals,
+      termsUrl,
+      expiresAt,
+      isInstant,
+      isNoId,
+      isGambling,
+      requiresSpending,
+      confidence,
       multiOfferSegments: segments,
     }
   } catch (err) {

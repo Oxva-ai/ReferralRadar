@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { pool } from '../db/pool.js'
-import { getHealthStats, getCseQuotaUsed } from '../db/queries.js'
+import { getHealthStats } from '../db/queries.js'
 import { queue } from '../services/queue.js'
 import { getDegradedFeeds } from '../workers/rss.js'
 
@@ -47,10 +47,10 @@ const workerLocks = new Set<string>()
 
 //---- blocklist table init -------------------------------------------------
 let blocklistTableReady = false
-async function ensureBlocklistTable(): Promise<void> {
+async function ensureBlockedDomainsTable(): Promise<void> {
   if (blocklistTableReady) return
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS blocklist_domains (
+    CREATE TABLE IF NOT EXISTS blocked_domains (
       domain TEXT PRIMARY KEY,
       added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -178,9 +178,9 @@ router.post('/admin/referrals/batch-categorize', async (req: Request, res: Respo
 // GET /admin/blocklist
 router.get('/admin/blocklist', async (_req: Request, res: Response) => {
   try {
-    await ensureBlocklistTable()
+    await ensureBlockedDomainsTable()
     const result = await pool.query<{ domain: string; added_at: string }>(
-      'SELECT domain, added_at FROM blocklist_domains ORDER BY domain',
+      'SELECT domain, added_at FROM blocked_domains ORDER BY domain',
     )
     res.json({ data: result.rows })
   } catch (err) {
@@ -197,10 +197,10 @@ router.post('/admin/blocklist', async (req: Request, res: Response) => {
   }
 
   try {
-    await ensureBlocklistTable()
+    await ensureBlockedDomainsTable()
     const clean = domain.trim().toLowerCase().replace(/^www\./, '')
     await pool.query(
-      'INSERT INTO blocklist_domains (domain) VALUES ($1) ON CONFLICT (domain) DO NOTHING',
+      'INSERT INTO blocked_domains (domain) VALUES ($1) ON CONFLICT (domain) DO NOTHING',
       [clean],
     )
     res.status(201).json({ status: 'added', domain: clean })
@@ -213,9 +213,9 @@ router.post('/admin/blocklist', async (req: Request, res: Response) => {
 router.delete('/admin/blocklist/:domain', async (req: Request, res: Response) => {
   const domain = param(req.params.domain)
   try {
-    await ensureBlocklistTable()
+    await ensureBlockedDomainsTable()
     const result = await pool.query(
-      'DELETE FROM blocklist_domains WHERE domain = $1 RETURNING domain',
+      'DELETE FROM blocked_domains WHERE domain = $1 RETURNING domain',
       [domain],
     )
     if (result.rowCount === 0) {
@@ -259,7 +259,6 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
   try {
     const [
       health,
-      cseUsed,
       degradedFeeds,
       recentReferrals,
       categoryBreakdown,
@@ -269,7 +268,6 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
       brandCount,
     ] = await Promise.all([
       getHealthStats(),
-      getCseQuotaUsed(),
       Promise.resolve(getDegradedFeeds()),
       pool.query(`
         SELECT * FROM referrals WHERE is_active = true
@@ -304,7 +302,10 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
     const html = renderDashboard({
       totalActive: health.totalActive,
       discoveredToday: health.discoveredToday,
-      cseUsed,
+      serperUsed: 0,
+      serperLimit: 83,
+      braveUsed: 0,
+      braveLimit: 66,
       queuePending: queue.size,
       queueActive: queue.active,
       degradedFeeds,
@@ -328,7 +329,10 @@ router.get('/admin/dashboard', async (_req: Request, res: Response) => {
 interface DashboardData {
   totalActive: number
   discoveredToday: number
-  cseUsed: number
+  serperUsed: number
+  serperLimit: number
+  braveUsed: number
+  braveLimit: number
   queuePending: number
   queueActive: number
   degradedFeeds: string[]
@@ -357,12 +361,11 @@ function renderDashboard(d: DashboardData): string {
   }
 
   // Status row
-  const csePct = Math.min(100, Math.round((d.cseUsed / 100) * 100))
-  const cseColor = d.cseUsed > 80 ? 'status-error' : d.cseUsed > 50 ? 'status-warn' : 'status-ok'
   const queueColor = d.queuePending > 300 ? 'status-error' : d.queuePending > 100 ? 'status-warn' : 'status-ok'
   const statusRow = `<div class="status-row">
     <span>Queue: <strong class="${queueColor}">${d.queuePending} pending</strong> / ${d.queueActive} active</span>
-    <span>CSE quota: <strong class="${cseColor}">${d.cseUsed}</strong> / 100 today</span>
+    <span>Serper: <strong>${d.serperUsed}</strong> / ${d.serperLimit} today</span>
+    <span>Brave: <strong>${d.braveUsed}</strong> / ${d.braveLimit} today</span>
     ${d.degradedFeeds.length ? `<span class="warn">Degraded RSS: ${esc(d.degradedFeeds.join(', '))}</span>` : '<span class="success">All RSS feeds healthy</span>'}
   </div>`
 
@@ -716,8 +719,13 @@ function renderDashboard(d: DashboardData): string {
 (function(){
   const key = new URLSearchParams(window.location.search).get('key')
   function api(path, opts) {
-    const sep = path.includes('?') ? '&' : '?'
-    return fetch('/api/v1/' + path + sep + 'key=' + encodeURIComponent(key), opts)
+    opts = opts || {}
+    opts.headers = opts.headers || {}
+    if (key) {
+      opts.headers['Authorization'] = 'Bearer ' + key
+    }
+    opts.credentials = 'same-origin'
+    return fetch('/api/v1/' + path, opts)
   }
 
   //---- toasts ----

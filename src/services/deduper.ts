@@ -1,8 +1,9 @@
 import { logger } from '../logger.js'
+import { fireEvent } from './webhook-service.js'
 import { computeContentHash } from '../lib/hash.js'
 import { pool } from '../db/pool.js'
-import { isSkipDomain, KNOWN_UK_COMPANIES } from '../lib/blocklist.js'
-import { getCompanyName, getCategory, UK_BRANDS } from '../lib/brands.js'
+import { isSkipDomain } from '../lib/blocklist.js'
+import { BRAND_BY_DOMAIN, getCompanyName, getCategory, UK_BRANDS } from '../lib/brands.js'
 import { normalizeUrl } from '../lib/url.js'
 import {
   findReferralBySourceUrl,
@@ -118,46 +119,62 @@ export async function checkDedup(
 function cleanCompanyName(raw: string, domain: string): string {
   let name = raw.trim()
 
+  // 1. Brand list lookup by domain
+  if (domain) {
+    const brand = BRAND_BY_DOMAIN[domain] ?? BRAND_BY_DOMAIN[`www.${domain}`]
+    if (brand) return brand.name
+  }
+
+  // 2. Strip pipe/dash suffixes
   if (name.includes('|')) {
-    const parts = name.split('|')
-    for (const part of parts) {
-      const trimmed = part.trim()
-      if (trimmed.length > 2 && trimmed.length < 80) {
-        name = trimmed
-        break
-      }
+    const parts = name.split('|').map(p => p.trim())
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const brand = UK_BRANDS.find(b => b.name.toLowerCase() === parts[i]!.toLowerCase())
+      if (brand) return brand.name
     }
-    if (name !== raw.trim()) return cleanCompanyName(name, domain)
+    const stripped = parts[0]!.replace(/\s*(refer\s+a\s+friend|referral|sign\s*up|offer|code|promo|discount|voucher|coupon)\s*/gi, '').trim()
+    if (stripped.length > 2) name = stripped
   }
 
-  if (name.includes('—')) {
-    name = name.split('—')[0]!.trim()
-  }
-  if (name.includes('–')) {
-    name = name.split('–')[0]!.trim()
-  }
+  if (name.includes('—')) name = name.split('—')[0]!.trim()
+  if (name.includes('–')) name = name.split('–')[0]!.trim()
 
-  name = name.replace(/\s*[-—–]\s*(referral|refer a friend|sign up|signup|invite friends|invite).*$/i, '').trim()
+  name = name
+    .replace(/\s*[-—–]\s*(referral|refer a friend|sign up|signup|invite friends|invite).*$/i, '')
+    .replace(/\s+\d{4}\s*$/g, '')
+    .replace(/\s*[\([🔗]](?:UK|2024|2025|2026)[\)\]]?\s*$/gi, '')
+    .trim()
 
-  if (name.length > 40) {
+  // 3. Junk name rejection
+  const JUNK_NAMES = new Set([
+    'home', 'i', 'me', 'my', 'refer', 'get a referral', 'referral code',
+    'join', 'sign up', 'referral', 'invite', 'welcome', 'free', 'offer',
+    'coupon', 'voucher', 'promo', 'discount', 'deal', 'unknown',
+  ])
+  if (!name || name.length < 2 || JUNK_NAMES.has(name.toLowerCase())) {
+    if (domain) {
+      const brand = BRAND_BY_DOMAIN[domain] ?? BRAND_BY_DOMAIN[`www.${domain}`]
+      if (brand) return brand.name
+    }
     const domainRoot = domain.split('.')[0]!
-    const firstWord = name.split(' ')[0]!
-    if (firstWord.toLowerCase() === domainRoot.toLowerCase()) {
-      return firstWord.charAt(0).toUpperCase() + firstWord.slice(1)
-    }
     return domainRoot.charAt(0).toUpperCase() + domainRoot.slice(1)
   }
 
-  const knownNames = Object.values(KNOWN_UK_COMPANIES)
+  // 4. Known brand fuzzy match
   for (const brand of UK_BRANDS) {
-    if (!knownNames.includes(brand.name)) {
-      knownNames.push(brand.name)
+    if (brand.name.length > 3 && name.toLowerCase().includes(brand.name.toLowerCase())) {
+      return brand.name
     }
   }
-  for (const brandName of knownNames) {
-    if (brandName.length > 3 && name.toLowerCase().includes(brandName.toLowerCase())) {
-      return brandName
+
+  // 5. Length sanity
+  if (name.length > 60) {
+    if (domain) {
+      const brand = BRAND_BY_DOMAIN[domain] ?? BRAND_BY_DOMAIN[`www.${domain}`]
+      if (brand) return brand.name
     }
+    const domainRoot = domain.split('.')[0]!
+    return domainRoot.charAt(0).toUpperCase() + domainRoot.slice(1)
   }
 
   return name
@@ -201,6 +218,17 @@ export async function storeReferral(
 
   // Override extracted company name with cleaned version for dedup
   const extractionForDedup: ExtractionResult = { ...extracted, companyName: name }
+
+  // Aggregator detection: 3+ unique GBP amounts on one page
+  let isAggregator = false
+  if (extracted.offerText) {
+    const amounts = extracted.offerText.match(/£\s*\d+\.?\d*/g) ?? []
+    const unique = new Set(amounts)
+    if (unique.size >= 3) {
+      isAggregator = true
+      logger.debug({ url: normalizedUrl, uniqueAmounts: unique.size }, 'aggregator detected: 3+ unique GBP amounts')
+    }
+  }
 
   const dedupResult = await checkDedup(normalizedUrl, extractionForDedup.offerText, extractionForDedup.companyName, domain)
 
@@ -280,6 +308,17 @@ export async function storeReferral(
     sources: [source],
     source_count: 1,
     uk_signal_strength: ukSignal,
+    is_aggregator: isAggregator,
+    referee_reward: extracted.refereeReward,
+    referrer_reward: extracted.referrerReward,
+    offer_summary: extracted.offerSummary,
+    referral_code: extracted.referralCode,
+    terms_url: extracted.termsUrl,
+    is_instant: extracted.isInstant,
+    is_no_id: extracted.isNoId,
+    is_gambling: extracted.isGambling,
+    requires_spending: extracted.requiresSpending,
+    confidence: extracted.confidence,
     reddit_post_id: redditPostId ?? null,
     reddit_score: redditScore ?? null,
     reddit_comments: redditComments ?? null,
@@ -287,6 +326,19 @@ export async function storeReferral(
   }
 
   const row = await insertReferral(data)
+  if (row) {
+    setImmediate(() => {
+      fireEvent('referral.created', {
+        referral_id: row.id,
+        company_name: row.company_name,
+        reward: row.reward,
+        reward_numeric: row.reward_numeric,
+        referral_link: row.referral_link,
+        domain: row.domain,
+        discovered_at: row.discovered_at.toISOString(),
+      }).catch(err => logger.error({ err }, 'webhook fire failed'))
+    })
+  }
   logger.info({ id: row.id, url: normalizedUrl, source }, 'stored new referral')
   return row.id
 }

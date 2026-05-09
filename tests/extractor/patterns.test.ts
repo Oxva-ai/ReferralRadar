@@ -139,14 +139,14 @@ describe('extract: company name', () => {
     const page = '<!DOCTYPE html><html><head><meta property="og:site_name" content="Monzo Bank"><title>Monzo - Referral</title></head><body><p>Get £5 bonus when you refer a friend to Monzo Bank today</p></body></html>'
     const result = await extract(page, 'https://monzo.com/referral')
     expect(result).not.toBeNull()
-    expect(result!.companyName).toBe('Monzo Bank')
+    expect(result!.companyName).toBe('Monzo')
   })
 
   it('falls back to title tag', async () => {
     const page = '<!DOCTYPE html><html><head><title>HelloFresh UK - Refer a Friend</title></head><body><p>Get a free food box delivered to your doorstep when you refer friends to our service</p></body></html>'
     const result = await extract(page, 'https://hellofresh.co.uk/refer')
     expect(result).not.toBeNull()
-    expect(result!.companyName).toBe('HelloFresh UK - Refer a Friend')
+    expect(result!.companyName).toBe('HelloFresh')
   })
 
   it('falls back to domain name', async () => {

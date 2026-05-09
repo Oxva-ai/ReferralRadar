@@ -1,12 +1,13 @@
 import got from 'got'
 import { config } from '../config.js'
-import { isSkipDomain, KNOWN_UK_COMPANIES } from '../lib/blocklist.js'
+import { isSkipDomain } from '../lib/blocklist.js'
 import { logger } from '../logger.js'
 import { fetch } from '../services/fetcher.js'
 import { extract } from '../services/extractor.js'
 import { checkUkMarket } from '../services/uk-filter.js'
 import { storeReferral } from '../services/deduper.js'
 import { insertWorkerRun, completeWorkerRun, failWorkerRun } from '../db/queries.js'
+import { checkQuota, incrementQuota } from '../services/quota-tracker.js'
 
 interface SearchResult {
   title: string
@@ -88,8 +89,14 @@ export async function run(): Promise<void> {
     for (let i = 0; i < 3; i++) {
       const query = getNextQuery()
 
-      // Serper (free: 2500/mo)
-      const serperResults = await serperSearch(query)
+      // Serper (free: 2500/mo → ~83/day)
+      let serperResults: SearchResult[] = []
+      if (await checkQuota('serper')) {
+        serperResults = await serperSearch(query)
+        await incrementQuota('serper')
+      } else {
+        logger.warn('search: Serper quota exhausted, skipping')
+      }
       for (const result of serperResults) {
         processed++
         if (isSkipDomain(result.link)) continue
@@ -109,8 +116,14 @@ export async function run(): Promise<void> {
         }
       }
 
-      // Brave (free: 2000/mo)
-      const braveResults = await braveSearch(query)
+      // Brave (free: 2000/mo → ~66/day)
+      let braveResults: SearchResult[] = []
+      if (await checkQuota('brave')) {
+        braveResults = await braveSearch(query)
+        await incrementQuota('brave')
+      } else {
+        logger.warn('search: Brave quota exhausted, skipping')
+      }
       for (const result of braveResults) {
         processed++
         if (isSkipDomain(result.link)) continue

@@ -5,6 +5,7 @@ import { extract } from '../services/extractor.js'
 import { checkUkMarket } from '../services/uk-filter.js'
 import { storeReferral } from '../services/deduper.js'
 import { insertWorkerRun, completeWorkerRun, failWorkerRun } from '../db/queries.js'
+import { pool } from '../db/pool.js'
 
 interface FeedConfig {
   name: string
@@ -21,6 +22,34 @@ const parser = new RssParser({
 
 // Feed health tracking: consecutive empty runs per feed
 const feedHealth = new Map<string, { consecutiveEmptyRuns: number; lastStatus: 'ok' | 'empty' | 'error'; lastRunAt: Date }>()
+
+async function loadFeedHealth(): Promise<void> {
+  try {
+    const result = await pool.query<{ key: string; value: string }>(
+      "SELECT key, value FROM app_config WHERE key = 'feed_health'",
+    )
+    if (result.rows[0]) {
+      const data = JSON.parse(result.rows[0].value)
+      for (const [k, v] of Object.entries(data)) {
+        feedHealth.set(k, v as any)
+      }
+    }
+  } catch {
+    // start fresh if table doesn't exist yet
+  }
+}
+
+async function saveFeedHealth(): Promise<void> {
+  try {
+    const data = Object.fromEntries(feedHealth)
+    await pool.query(
+      "INSERT INTO app_config (key, value) VALUES ('feed_health', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+      [JSON.stringify(data)],
+    )
+  } catch {
+    // non-critical
+  }
+}
 
 const FEEDS: FeedConfig[] = [
   // Primary — every 30 min
@@ -159,6 +188,8 @@ async function runTier(tier: string): Promise<void> {
   const feeds = FEEDS.filter(f => tier === 'tertiary' ? (f.tier === 'tertiary' || f.tier === 'degraded') : f.tier === tier)
   if (feeds.length === 0) return
 
+  await loadFeedHealth()
+
   const runId = await insertWorkerRun(`rss-${tier}`)
   let totalItems = 0
   let totalDiscovered = 0
@@ -176,6 +207,7 @@ async function runTier(tier: string): Promise<void> {
       logger.warn({ degraded }, 'RSS feeds degraded')
     }
 
+    await saveFeedHealth()
     await completeWorkerRun(runId, totalItems, totalDiscovered)
     logger.info({ items: totalItems, discovered: totalDiscovered, tier }, 'RSS worker complete')
   } catch (err) {

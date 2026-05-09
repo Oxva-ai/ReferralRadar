@@ -44,8 +44,19 @@ CREATE TABLE IF NOT EXISTS referrals (
   last_verified_at  TIMESTAMPTZ,
   expires_at        TIMESTAMPTZ,
   is_active         BOOLEAN DEFAULT TRUE,
+  is_aggregator     BOOLEAN DEFAULT FALSE,
   verification_failures INTEGER DEFAULT 0,
   notes             TEXT,
+  referee_reward    TEXT,
+  referrer_reward   TEXT,
+  offer_summary     TEXT,
+  referral_code     TEXT,
+  terms_url         TEXT,
+  is_instant        BOOLEAN DEFAULT FALSE,
+  is_no_id          BOOLEAN DEFAULT FALSE,
+  is_gambling       BOOLEAN DEFAULT FALSE,
+  requires_spending BOOLEAN DEFAULT FALSE,
+  confidence        NUMERIC(4,3),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -134,6 +145,83 @@ CREATE TABLE IF NOT EXISTS impression_events (
   impressed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Search effectiveness tracking
+CREATE TABLE IF NOT EXISTS search_queries (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  worker_name     VARCHAR(50) NOT NULL,
+  query           TEXT NOT NULL,
+  source_api      VARCHAR(20) NOT NULL,
+  results_count   INTEGER DEFAULT 0,
+  discoveries_count INTEGER DEFAULT 0,
+  executed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Dead letter queue
+CREATE TABLE IF NOT EXISTS dead_letter_queue (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url             TEXT NOT NULL,
+  source          VARCHAR(50) NOT NULL,
+  error_message   TEXT,
+  retry_count     INTEGER DEFAULT 0,
+  failed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Brands directory (admin-managed, replaces static brands.ts data)
+CREATE TABLE IF NOT EXISTS brands (
+  name              TEXT NOT NULL,
+  domain            TEXT PRIMARY KEY,
+  category          TEXT NOT NULL DEFAULT 'other',
+  likely_referral_page TEXT,
+  is_active         BOOLEAN DEFAULT TRUE,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Webhook registrations
+CREATE TABLE IF NOT EXISTS webhooks (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url             TEXT NOT NULL,
+  events          TEXT[] NOT NULL DEFAULT '{}',
+  secret          TEXT,
+  is_active       BOOLEAN DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Webhook delivery log
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  webhook_id      UUID NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event           VARCHAR(50) NOT NULL,
+  status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+  response_code   INTEGER,
+  response_body   TEXT,
+  attempted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Reddit processed posts dedup
+CREATE TABLE IF NOT EXISTS reddit_processed_posts (
+  post_id TEXT PRIMARY KEY,
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Blocked domains (admin-managed blocklist)
+CREATE TABLE IF NOT EXISTS blocked_domains (
+  domain TEXT PRIMARY KEY,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Brand directory (replaces static brands.ts data)
+CREATE TABLE IF NOT EXISTS brands (
+  name                TEXT NOT NULL,
+  domain              TEXT PRIMARY KEY,
+  category            TEXT NOT NULL,
+  likely_referral_page TEXT,
+  is_active           BOOLEAN DEFAULT TRUE,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Seed default config
 INSERT INTO app_config (key, value) VALUES
   ('score_weight_freshness',   '0.25'),
@@ -141,7 +229,12 @@ INSERT INTO app_config (key, value) VALUES
   ('score_weight_value',       '0.20'),
   ('score_weight_uk_signal',   '0.10'),
   ('score_weight_engagement',  '0.25'),
-  ('score_min_threshold',      '0.30')
+  ('score_min_threshold',      '0.30'),
+  ('serper_daily_limit',       '83'),
+  ('brave_daily_limit',        '66'),
+  ('brand_search_index',       '0'),
+  ('search_query_index',       '0'),
+  ('logo_dev_token',           'pk_Rz_wcJe5S7qjtTJ_lxODDQ')
 ON CONFLICT (key) DO NOTHING;
 
 -- Score materialisation function
@@ -236,3 +329,5 @@ CREATE INDEX IF NOT EXISTS idx_offer_history_referral  ON offer_history(referral
 CREATE INDEX IF NOT EXISTS idx_submissions_url         ON submissions(url);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_referrals_reddit_post ON referrals(reddit_post_id) WHERE reddit_post_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_click_events_clicked_at  ON click_events(clicked_at);
+CREATE INDEX IF NOT EXISTS idx_referrals_verification_stale ON referrals(last_verified_at ASC NULLS FIRST, verification_failures ASC) WHERE is_active = true AND source_url IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_submissions_pending_stuck ON submissions(created_at ASC) WHERE status = 'pending';

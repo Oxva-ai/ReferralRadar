@@ -2,6 +2,8 @@ import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
 import { pool } from '../db/pool.js'
 import { logger } from '../logger.js'
+import { getWebhooks, createWebhook, deleteWebhook, getDeliveryHistory } from '../services/webhook-service.js'
+import { reloadBrands } from '../lib/brands.js'
 
 const router = Router()
 
@@ -23,15 +25,23 @@ const blocklistAddSchema = z.object({
   domain: z.string().min(1),
 })
 
-const VALID_WORKERS: string[] = ['search', 'reddit', 'competitor', 'rss', 'brand-search']
+const VALID_WORKERS: string[] = [
+  'search', 'brand-search', 'reddit', 'reddit-tertiary',
+  'competitor', 'rss-primary', 'rss-secondary', 'rss-tertiary',
+  'page-monitor', 'verifier', 'url-guesser', 'rescore', 'rescore-engage',
+]
+
+let blockedDomainsTableReady = false
 
 async function ensureBlockedDomainsTable(): Promise<void> {
+  if (blockedDomainsTableReady) return
   await pool.query(`
     CREATE TABLE IF NOT EXISTS blocked_domains (
       domain TEXT PRIMARY KEY,
-      added_at TIMESTAMPTZ DEFAULT NOW()
+      added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
+  blockedDomainsTableReady = true
 }
 
 router.get('/admin/blocklist', async (req: Request, res: Response) => {
@@ -107,8 +117,8 @@ router.delete('/admin/referrals/:id', async (req: Request, res: Response) => {
 
   try {
     const { id } = z.object({ id: uuidSchema }).parse(req.params)
-    await pool.query('DELETE FROM referrals WHERE id = $1', [id])
-    return res.json({ status: 'ok' })
+    await pool.query('UPDATE referrals SET is_active = false, updated_at = NOW() WHERE id = $1', [id])
+    return res.json({ status: 'deleted' })
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'validation failed', details: err.errors })
@@ -210,15 +220,25 @@ router.post('/admin/workers/:workerName/restart', async (req: Request, res: Resp
 
     const force = String(req.query.force) === 'true'
 
-    let workerModule: { run: () => Promise<void> }
-    switch (workerName) {
-      case 'search': workerModule = await import('../workers/search.js'); break
-      case 'reddit': workerModule = await import('../workers/reddit.js'); break
-      case 'competitor': workerModule = await import('../workers/competitor.js'); break
-      case 'rss': workerModule = await import('../workers/rss.js'); break
-      case 'brand-search': workerModule = await import('../workers/brand-search.js'); break
-      default: return res.status(400).json({ error: `unknown worker: ${workerName}` })
+    const workerModules: Record<string, () => Promise<{ run: () => Promise<void> }>> = {
+      search: () => import('../workers/search.js'),
+      'brand-search': () => import('../workers/brand-search.js'),
+      reddit: () => import('../workers/reddit.js'),
+      'reddit-tertiary': () => import('../workers/reddit.js').then(m => ({ run: m.runTertiary })),
+      competitor: () => import('../workers/competitor.js'),
+      'rss-primary': () => import('../workers/rss.js'),
+      'rss-secondary': () => import('../workers/rss.js').then(m => ({ run: m.runSecondary })),
+      'rss-tertiary': () => import('../workers/rss.js').then(m => ({ run: m.runTertiary })),
+      'page-monitor': () => import('../workers/page-monitor.js'),
+      verifier: () => import('../workers/verifier.js'),
+      'url-guesser': () => import('../workers/url-guesser.js'),
+      rescore: () => import('../workers/rescore.js').then(m => ({ run: m.runRescore })),
+      'rescore-engage': () => import('../workers/rescore.js').then(m => ({ run: m.runEngagementAggregation })),
     }
+
+    const loader = workerModules[workerName]
+    if (!loader) return res.status(400).json({ error: `unknown worker: ${workerName}` })
+    const workerModule = await loader()
     setImmediate(() => {
       workerModule.run().catch((err: unknown) => {
         logger.error({ err, worker: workerName }, 'triggered worker failed')
@@ -259,6 +279,72 @@ router.get('/admin/workers/:workerName', async (req: Request, res: Response) => 
     return res.json({ runs: result.rows })
   } catch (err) {
     logger.error({ err }, 'failed to fetch worker runs')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.get('/admin/webhooks', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+  try {
+    const result = await pool.query(
+      `SELECT id, url, events, secret IS NOT NULL as has_secret, is_active, created_at
+       FROM webhooks ORDER BY created_at DESC`,
+    )
+    return res.json({ data: result.rows })
+  } catch (err) {
+    logger.error({ err }, 'failed to list webhooks')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.post('/admin/webhooks', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+  try {
+    const { url, events, secret } = req.body ?? {}
+    if (!url || !Array.isArray(events) || events.length === 0) {
+      return res.status(400).json({ error: 'url and events (array) required' })
+    }
+    const id = await createWebhook(url, events, secret)
+    return res.status(201).json({ status: 'created', id })
+  } catch (err) {
+    logger.error({ err }, 'failed to create webhook')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.delete('/admin/webhooks/:id', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+  try {
+    const id = req.params.id as string
+    const deleted = await deleteWebhook(id)
+    if (!deleted) return res.status(404).json({ error: 'not_found' })
+    return res.json({ status: 'deleted' })
+  } catch (err) {
+    logger.error({ err }, 'failed to delete webhook')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.get('/admin/webhooks/:id/deliveries', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+  try {
+    const id = req.params.id as string
+    const limit = parseInt(String(req.query.limit)) || 50
+    const rows = await getDeliveryHistory(id, limit)
+    return res.json({ data: rows })
+  } catch (err) {
+    logger.error({ err }, 'failed to list deliveries')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.post('/admin/brands/reload', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+  try {
+    reloadBrands()
+    return res.json({ status: 'reloaded' })
+  } catch (err) {
+    logger.error({ err }, 'failed to reload brands')
     return res.status(500).json({ error: 'internal server error' })
   }
 })

@@ -13,6 +13,9 @@ const envSchema = z.object({
   SERPER_API_KEY: z.string().min(1).default('dev-serper-key'),
   BRAVE_API_KEY: z.string().min(1).default('dev-brave-key'),
   CORS_ORIGINS: z.string().default('https://easyearns.com'),
+  LOGO_DEV_TOKEN: z.string().min(1).default('pk_Rz_wcJe5S7qjtTJ_lxODDQ'),
+  EASYEARNS_STAGING_ORIGINS: z.string().default(''),
+  CATEGORY_CACHE_TTL: z.coerce.number().int().default(300),
 })
 
 export type Config = z.infer<typeof envSchema>

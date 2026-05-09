@@ -24,7 +24,9 @@ export function createApp(): express.Express {
   app.use(express.json({ limit: '1kb' }))
 
   app.use(cors({
-    origin: config.NODE_ENV === 'production' ? config.CORS_ORIGINS.split(',') : '*',
+    origin: config.NODE_ENV === 'production'
+      ? [...config.CORS_ORIGINS.split(','), ...(config.EASYEARNS_STAGING_ORIGINS ? config.EASYEARNS_STAGING_ORIGINS.split(',') : [])].filter(Boolean)
+      : '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
     allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-ID'],
     maxAge: 86400,
@@ -50,11 +52,11 @@ export function createApp(): express.Express {
   app.use('/api/v1', (req, res, next) => {
     if (req.path === '/health') return next()
     const headerKey = req.headers.authorization?.replace('Bearer ', '') ?? ''
-    const queryKey = (req.query.key as string) ?? ''
-    const key = headerKey || queryKey
+    if (!headerKey) {
+      return res.status(401).json({ error: 'unauthorized' })
+    }
 
-    // timingSafeEqual requires equal-length buffers — pad shorter key
-    const keyBuf = Buffer.from(key)
+    const keyBuf = Buffer.from(headerKey)
     const easyearnsBuf = Buffer.from(config.EASYEARNS_API_KEY)
     const adminBuf = Buffer.from(config.ADMIN_API_KEY)
 

@@ -1,8 +1,27 @@
+import got from 'got'
 import { logger } from '../logger.js'
 import { fetch } from '../services/fetcher.js'
 import { extract } from '../services/extractor.js'
 import { insertWorkerRun, completeWorkerRun, failWorkerRun } from '../db/queries.js'
 import { pool } from '../db/pool.js'
+
+async function checkLinkHealth(url: string): Promise<'valid' | 'redirected' | 'broken' | 'timeout'> {
+  try {
+    const response = await got(url, {
+      method: 'HEAD',
+      timeout: { request: 10_000 },
+      followRedirect: true,
+      maxRedirects: 3,
+      throwHttpErrors: false,
+      http2: true,
+    })
+    if (response.statusCode === 200) return 'valid'
+    if (response.statusCode >= 300 && response.statusCode < 400) return 'redirected'
+    return 'broken'
+  } catch {
+    return 'timeout'
+  }
+}
 
 interface StaleReferral {
   id: string
@@ -40,6 +59,19 @@ export async function run(): Promise<void> {
 
       try {
         const { html, statusCode, url: finalUrl } = await fetch(ref.source_url)
+
+        // Check referral link health
+        if (ref.referral_link) {
+          const linkHealth = await checkLinkHealth(ref.referral_link)
+          if (linkHealth === 'broken' || linkHealth === 'timeout') {
+            await pool.query(
+              `UPDATE referrals SET notes = COALESCE(notes, '') || '; referral link ' || $1 || ' as of ' || NOW()::text,
+             updated_at = NOW() WHERE id = $2`,
+              [linkHealth, ref.id],
+            )
+            logger.info({ id: ref.id, url: ref.referral_link, status: linkHealth }, 'verifier: referral link unhealthy')
+          }
+        }
 
         if (statusCode === 404 || statusCode === 410) {
           await deactivatePage(ref)

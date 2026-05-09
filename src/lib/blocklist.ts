@@ -1,4 +1,7 @@
-// Domains to skip — aggregators, forums, personal pages, known spam
+import { pool } from '../db/pool.js'
+import { logger } from '../logger.js'
+
+// Bootstrap fallback — used when DB is unavailable
 export const SKIP_DOMAINS = [
   // Aggregator/referral code sites
   'getareferral.com', 'thereferralguy.com', 'referralcodes.com',
@@ -23,76 +26,61 @@ export const SKIP_DOMAINS = [
   'inboxpounds.co.uk', 'test.io', 'testingtime.com',
   // Generic non-referral
   'google.com', 'bing.com', 'yahoo.com',
-  // Known spam domains (add as discovered)
   // Global companies passing UK filter via .co.uk mirror — not UK-specific
   'rakuten.com', 'tesla.com',
+  // Aggregator / spam sites
+  'energy-review.co.uk', 'finder.com', 'finder.co.uk',
+  'referandsave.co.uk', 'householdmoneysaving.com',
+  'refermehappy.com', 'referral-links.uk',
+  'octopusreferraldeals.co.uk', 'octopus-referral-code.co.uk',
+  'tesla-referral.uk', 'web-tips.co.uk', 'scrimpr.co.uk',
+  'capitalmatters.co.uk', 'mysidegig.co.uk', 'orderwise.co.uk',
+  'homelyeconomics.com', 'confused.com', 'comparethemarket.com',
+  'gocompare.com', 'moneysupermarket.com', 'trustpilot.com',
+  'uk.trustpilot.com', 'referralcodes.uk', 'couponbirds.com',
+  'promocodes.com', 'hotoffers.co.uk', 'vouchercodes.org.uk',
+  'vouchercloud.com', 'grabon.in', 'couponfollow.com',
+  'joinhoney.com', 'picoworkers.com', 'sproutgigs.com',
+  'ysense.com', 'thisismoney.co.uk', 'lovemoney.com',
 ]
+
+let _blockedSet: Set<string> = new Set(SKIP_DOMAINS)
+let _blockedLoadPromise: Promise<void> | null = null
+
+async function loadBlockedDomains(): Promise<void> {
+  try {
+    const result = await pool.query<{ domain: string }>(
+      'SELECT domain FROM blocked_domains',
+    )
+    const merged = new Set(SKIP_DOMAINS)
+    for (const row of result.rows) {
+      merged.add(row.domain.toLowerCase())
+    }
+    _blockedSet = merged
+  } catch (err) {
+    logger.warn({ err }, 'blocked_domains DB load failed, using static SKIP_DOMAINS')
+  }
+}
+
+function ensureBlockedDomainsLoaded(): void {
+  if (!_blockedLoadPromise) {
+    _blockedLoadPromise = loadBlockedDomains()
+  }
+}
+
+ensureBlockedDomainsLoaded()
 
 export function isSkipDomain(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, '')
-    return SKIP_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d))
+    if (_blockedSet.has(hostname)) return true
+    for (const d of _blockedSet) {
+      if (hostname.endsWith('.' + d)) return true
+    }
+    return false
   } catch {
     return true
   }
 }
 
-// Known UK companies for company name lookup
-export const KNOWN_UK_COMPANIES: Record<string, string> = {
-  'monzo.com': 'Monzo',
-  'starlingbank.com': 'Starling Bank',
-  'revolut.com': 'Revolut',
-  'wise.com': 'Wise',
-  'chase.co.uk': 'Chase UK',
-  'paypal.com': 'PayPal',
-  'curve.com': 'Curve',
-  'trading212.com': 'Trading 212',
-  'freetrade.io': 'Freetrade',
-  'hellofresh.co.uk': 'HelloFresh',
-  'gousto.co.uk': 'Gousto',
-  'deliveroo.co.uk': 'Deliveroo',
-  'octopus.energy': 'Octopus Energy',
-  'puregym.com': 'PureGym',
-  'trainline.com': 'Trainline',
-  'coinbase.com': 'Coinbase',
-  'kraken.com': 'Kraken',
-  'quidco.com': 'Quidco',
-  'topcashback.co.uk': 'TopCashback',
-  'moneyboxapp.com': 'Moneybox',
-  'pensionbee.com': 'PensionBee',
-  'nutmeg.com': 'Nutmeg',
-  'etoro.com': 'eToro',
-  'binance.com': 'Binance',
-  'voxi.co.uk': 'Voxi',
-  'currensea.com': 'Currensea',
-  'virginmedia.com': 'Virgin Media',
-  'sky.com': 'Sky',
-  'bt.com': 'BT',
-  'ee.co.uk': 'EE',
-  'three.co.uk': 'Three',
-  'vodafone.co.uk': 'Vodafone',
-  'o2.co.uk': 'O2',
-  'nordicspirit.co.uk': 'Nordic Spirit',
-  'sprive.com': 'Sprive',
-  'fidelity.co.uk': 'Fidelity',
-  'rakuten.co.uk': 'Rakuten UK',
-  'classpass.com': 'ClassPass',
-  'shopmium.com': 'Shopmium',
-  'airtime.co.uk': 'Airtime',
-  'airtimerewards.com': 'Airtime Rewards',
-  'parkchristmassavings.com': 'Park Christmas Savings',
-  'pickmypostcode.com': 'Pick My Postcode',
-  'republicofcats.com': 'Republic of Cats',
-  'taptapsend.com': 'Taptap Send',
-  'monument.co': 'Monument Bank',
-  'weightlossplans.co.uk': 'Weight Loss Plans',
-  'vinted.co.uk': 'Vinted',
-  'nexo.com': 'Nexo',
-  'brighty.app': 'Brighty',
-  'tonies.com': 'tonies',
-  'stamfordcycling.com': 'Stamford Cycling',
-  'eatclub.co.uk': 'EatClub',
-  'scrimpr.com': 'Scrimpr',
-  'nexo.io': 'Nexo',
-  'robinhood.com': 'Robinhood',
-}
+

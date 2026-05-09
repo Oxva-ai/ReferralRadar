@@ -6,6 +6,7 @@ import { checkUkMarket } from '../services/uk-filter.js'
 import { isSkipDomain } from '../lib/blocklist.js'
 import { storeReferral } from '../services/deduper.js'
 import { insertWorkerRun, completeWorkerRun, failWorkerRun } from '../db/queries.js'
+import { pool } from '../db/pool.js'
 
 interface RedditPost {
   id: string
@@ -58,8 +59,28 @@ const TERTIARY_SUBS: Array<{ sub: string; endpoint: string }> = [
 const SATURATION_THRESHOLD_SCORE = 50
 const SATURATION_THRESHOLD_COMMENTS = 20
 
-let lastProcessedPostIds = new Set<string>()
-const MAX_PROCESSED_POSTS = 5000
+async function isPostProcessed(postId: string): Promise<boolean> {
+  try {
+    const result = await pool.query(
+      "SELECT 1 FROM reddit_processed_posts WHERE post_id = $1",
+      [postId],
+    )
+    return result.rows.length > 0
+  } catch {
+    return false
+  }
+}
+
+async function markPostProcessed(postId: string): Promise<void> {
+  try {
+    await pool.query(
+      "INSERT INTO reddit_processed_posts (post_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [postId],
+    )
+  } catch {
+    // non-critical
+  }
+}
 
 function extractUrls(text: string): string[] {
   const urls: string[] = []
@@ -103,14 +124,10 @@ async function processPost(post: RedditPost): Promise<number> {
   let discovered = 0
 
   // Skip if already processed
-  if (lastProcessedPostIds.has(post.id)) return 0
+  if (await isPostProcessed(post.id)) return 0
 
-  // Trim processed set
-  if (lastProcessedPostIds.size > MAX_PROCESSED_POSTS) {
-    const arr = [...lastProcessedPostIds]
-    lastProcessedPostIds = new Set(arr.slice(arr.length - MAX_PROCESSED_POSTS / 2))
-  }
-  lastProcessedPostIds.add(post.id)
+  // Mark as processed
+  await markPostProcessed(post.id)
 
   // Saturation signal
   const isSaturated = post.score > SATURATION_THRESHOLD_SCORE && post.num_comments > SATURATION_THRESHOLD_COMMENTS

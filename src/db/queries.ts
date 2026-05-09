@@ -35,6 +35,17 @@ export interface ReferralRow {
   last_verified_at: Date | null
   expires_at: Date | null
   is_active: boolean
+  is_aggregator: boolean
+  referee_reward: string | null
+  referrer_reward: string | null
+  offer_summary: string | null
+  referral_code: string | null
+  terms_url: string | null
+  is_instant: boolean
+  is_no_id: boolean
+  is_gambling: boolean
+  requires_spending: boolean
+  confidence: number | null
   verification_failures: number
   notes: string | null
   created_at: Date
@@ -68,6 +79,17 @@ export interface InsertReferral {
   reddit_score?: number | null
   reddit_comments?: number | null
   is_active?: boolean
+  is_aggregator?: boolean
+  referee_reward?: string | null
+  referrer_reward?: string | null
+  offer_summary?: string | null
+  referral_code?: string | null
+  terms_url?: string | null
+  is_instant?: boolean
+  is_no_id?: boolean
+  is_gambling?: boolean
+  requires_spending?: boolean
+  confidence?: number | null
   notes?: string | null
   category?: string | null
 }
@@ -80,14 +102,18 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
       reward_type, qualifying_spend, max_referrals, content_hash, change_type,
       previous_offer, previous_offer_numeric, score, sources, source_count,
       uk_signal_strength, reddit_post_id, reddit_score, reddit_comments,
-      is_active, notes, category
+      is_active, is_aggregator, referee_reward, referrer_reward, offer_summary,
+      referral_code, terms_url, is_instant, is_no_id, is_gambling,
+      requires_spending, confidence, notes, category
     ) VALUES (
       $1, $2, $3, $4, $5,
       $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15,
       $16, $17, $18, $19, $20,
       $21, $22, $23, $24,
-      $25, $26, $27
+      $25, $26, $27, $28, $29,
+      $30, $31, $32, $33, $34,
+      $35, $36, $37, $38
     )
     RETURNING *
   `, [
@@ -116,6 +142,17 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
     data.reddit_score ?? null,
     data.reddit_comments ?? null,
     data.is_active ?? true,
+    data.is_aggregator ?? false,
+    data.referee_reward ?? null,
+    data.referrer_reward ?? null,
+    data.offer_summary ?? null,
+    data.referral_code ?? null,
+    data.terms_url ?? null,
+    data.is_instant ?? false,
+    data.is_no_id ?? false,
+    data.is_gambling ?? false,
+    data.requires_spending ?? false,
+    data.confidence ?? null,
     data.notes ?? null,
     data.category ?? null,
   ])
@@ -241,18 +278,36 @@ export async function updateReferralScore(id: string, score: number): Promise<vo
   )
 }
 
-export async function insertClickEvent(referralId: string): Promise<void> {
+export async function insertClickEvent(referralId: string): Promise<boolean> {
+  const exists = await pool.query(
+    `SELECT 1 FROM click_events
+     WHERE referral_id = $1 AND clicked_at > NOW() - INTERVAL '1 day'
+     LIMIT 1`,
+    [referralId],
+  )
+  if (exists.rows.length > 0) return false
+
   await pool.query(
     'INSERT INTO click_events (referral_id) VALUES ($1)',
     [referralId],
   )
+  return true
 }
 
-export async function insertImpressionEvent(referralId: string): Promise<void> {
+export async function insertImpressionEvent(referralId: string): Promise<boolean> {
+  const exists = await pool.query(
+    `SELECT 1 FROM impression_events
+     WHERE referral_id = $1 AND impressed_at > NOW() - INTERVAL '1 day'
+     LIMIT 1`,
+    [referralId],
+  )
+  if (exists.rows.length > 0) return false
+
   await pool.query(
     'INSERT INTO impression_events (referral_id) VALUES ($1)',
     [referralId],
   )
+  return true
 }
 
 export async function insertWorkerRun(workerName: string): Promise<string> {
@@ -277,24 +332,91 @@ export async function failWorkerRun(id: string, errorMessage: string): Promise<v
   )
 }
 
-export async function getCseQuotaUsed(): Promise<number> {
-  const result = await pool.query<{ queries_used: number }>(
-    "SELECT queries_used FROM api_usage WHERE api_name = 'google_cse' AND date = CURRENT_DATE",
+export async function updateSubmissionStatus(
+  id: string,
+  status: 'pending' | 'processing' | 'processed' | 'rejected',
+  resultReferralId?: string | null,
+  rejectionReason?: string | null,
+): Promise<void> {
+  await pool.query(
+    `UPDATE submissions SET status = $1, processed_at = NOW(),
+     result_referral_id = COALESCE($2, result_referral_id),
+     rejection_reason = COALESCE($3, rejection_reason)
+     WHERE id = $4`,
+    [status, resultReferralId ?? null, rejectionReason ?? null, id],
   )
-  return result.rows[0]?.queries_used ?? 0
 }
 
-export async function incrementCseQuota(): Promise<void> {
-  await pool.query(`
-    INSERT INTO api_usage (api_name, date, queries_used)
-    VALUES ('google_cse', CURRENT_DATE, 1)
-    ON CONFLICT (api_name, date)
-    DO UPDATE SET queries_used = api_usage.queries_used + 1
-  `)
+export async function getStuckSubmissions(ageMinutes: number = 5): Promise<Array<{ id: string; url: string; submitted_by: string | null }>> {
+  const result = await pool.query<{ id: string; url: string; submitted_by: string | null }>(
+    `SELECT id, url, submitted_by FROM submissions
+     WHERE status = 'pending' AND created_at < NOW() - $1::interval
+     ORDER BY created_at ASC
+     LIMIT 50`,
+    [`${ageMinutes} minutes`],
+  )
+  return result.rows
+}
+
+export async function enqueueDeadLetter(
+  url: string,
+  source: string,
+  errorMessage: string | null,
+  retryCount: number,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO dead_letter_queue (url, source, error_message, retry_count)
+     VALUES ($1, $2, $3, $4)`,
+    [url, source, errorMessage, retryCount],
+  )
+}
+
+export async function trackSearchQuery(
+  workerName: string,
+  query: string,
+  sourceApi: string,
+  resultsCount: number,
+  discoveriesCount: number,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO search_queries (worker_name, query, source_api, results_count, discoveries_count)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [workerName, query, sourceApi, resultsCount, discoveriesCount],
+  )
 }
 
 export async function resetDailyQuotas(): Promise<void> {
   await pool.query('DELETE FROM api_usage WHERE date < CURRENT_DATE')
+}
+
+export async function queryBrands(): Promise<Array<{ name: string; domain: string; category: string; likely_referral_page: string | null; is_active: boolean }>> {
+  const result = await pool.query(
+    'SELECT name, domain, category, likely_referral_page, is_active FROM brands ORDER BY name',
+  )
+  return result.rows
+}
+
+export async function upsertBrand(
+  name: string,
+  domain: string,
+  category: string,
+  likelyReferralPage?: string | null,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO brands (name, domain, category, likely_referral_page)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (domain) DO UPDATE SET
+       name = $1, category = $3, likely_referral_page = COALESCE($4, brands.likely_referral_page),
+       updated_at = NOW()`,
+    [name, domain.toLowerCase(), category, likelyReferralPage ?? null],
+  )
+}
+
+export async function deactivateBrand(domain: string): Promise<void> {
+  await pool.query(
+    'UPDATE brands SET is_active = false, updated_at = NOW() WHERE domain = $1',
+    [domain.toLowerCase()],
+  )
 }
 
 export async function getHealthStats() {

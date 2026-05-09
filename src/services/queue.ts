@@ -2,16 +2,21 @@ import { logger } from '../logger.js'
 import { fetch } from './fetcher.js'
 import { extract } from './extractor.js'
 import { storeReferral } from './deduper.js'
+import { updateSubmissionStatus, enqueueDeadLetter } from '../db/queries.js'
 
 interface Job {
   url: string
   source: string
+  ukSignal?: string
+  retryCount?: number
   meta: {
     reddit_post_id?: string
     reddit_score?: number
     reddit_comments?: number
     feed_guid?: string
     search_query?: string
+    submission_id?: string
+    submitter?: string
   }
 }
 
@@ -61,13 +66,23 @@ class PriorityQueue {
         item.url,
         extracted,
         item.source,
-        'unknown', // UK signal should be passed from upstream
+        item.ukSignal ?? 'unknown',
         item.meta.reddit_post_id,
         item.meta.reddit_score,
         item.meta.reddit_comments,
       )
+
+      // Update submission status if this was a user submission
+      if (item.source === 'user_submission' && item.meta.submission_id) {
+        await updateSubmissionStatus(item.meta.submission_id as string, 'processed')
+      }
     } catch (err) {
       logger.warn({ err, url: item.url }, 'queue processing failed')
+      // Move user submissions to dead letter after 3 failed attempts
+      if (item.source === 'user_submission' && (item.retryCount ?? 0) >= 2) {
+        await enqueueDeadLetter(item.url, item.source, String(err), item.retryCount ?? 0)
+        logger.warn({ url: item.url, retryCount: item.retryCount }, 'user submission moved to dead letter queue')
+      }
     } finally {
       clearTimeout(timer)
     }

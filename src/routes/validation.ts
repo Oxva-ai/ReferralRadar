@@ -27,3 +27,8 @@ export const idParamSchema = z.object({
 
 export type ReferralsQuery = z.infer<typeof referralsQuerySchema>
 export type SubmissionInput = z.infer<typeof submissionSchema>
+
+export const categoryQuerySchema = z.object({
+  name: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+})

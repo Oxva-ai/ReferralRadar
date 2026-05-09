@@ -6,6 +6,8 @@ import { fetch } from '../services/fetcher.js'
 import { extract } from '../services/extractor.js'
 import { storeReferral } from '../services/deduper.js'
 import { insertWorkerRun, completeWorkerRun, failWorkerRun } from '../db/queries.js'
+import { pool } from '../db/pool.js'
+import { checkQuota, incrementQuota } from '../services/quota-tracker.js'
 
 interface SearchResult {
   title: string
@@ -13,9 +15,31 @@ interface SearchResult {
   snippet: string
 }
 
-const BRANDS_PER_CYCLE = 10
+const BRANDS_PER_CYCLE = 3
 
 let brandIndex = 0
+
+async function loadBrandIndex(): Promise<number> {
+  try {
+    const result = await pool.query<{ value: string }>(
+      "SELECT value FROM app_config WHERE key = 'brand_search_index'",
+    )
+    return result.rows[0] ? parseInt(result.rows[0].value, 10) : 0
+  } catch {
+    return 0
+  }
+}
+
+async function saveBrandIndex(index: number): Promise<void> {
+  try {
+    await pool.query(
+      "INSERT INTO app_config (key, value) VALUES ('brand_search_index', $1) ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()",
+      [String(index)],
+    )
+  } catch {
+    // non-critical
+  }
+}
 
 function getBrandBatch() {
   const batch = []
@@ -87,6 +111,7 @@ async function braveSearch(brandName: string): Promise<SearchResult[]> {
 
 export async function run(): Promise<void> {
   const runId = await insertWorkerRun('brand_search')
+  brandIndex = await loadBrandIndex()
   let processed = 0
   let discovered = 0
 
@@ -96,11 +121,18 @@ export async function run(): Promise<void> {
     logger.info({ count: brands.length, startIndex: brandIndex }, 'brand_search: cycle start')
 
     for (const brand of brands) {
-      let results = await serperSearch(brand.name)
+      let results: SearchResult[] = []
+      if (await checkQuota('serper')) {
+        results = await serperSearch(brand.name)
+        await incrementQuota('serper')
+      }
 
       if (results.length === 0) {
         logger.info({ brand: brand.name }, 'brand_search: serper returned no results, trying brave fallback')
-        results = await braveSearch(brand.name)
+        if (await checkQuota('brave')) {
+          results = await braveSearch(brand.name)
+          await incrementQuota('brave')
+        }
       }
 
       let brandProcessed = 0
@@ -137,6 +169,7 @@ export async function run(): Promise<void> {
       await new Promise(r => setTimeout(r, 2000))
     }
 
+    await saveBrandIndex(brandIndex)
     await completeWorkerRun(runId, processed, discovered)
     logger.info({ processed, discovered, brandIndex }, 'brand_search: cycle complete')
   } catch (err) {
