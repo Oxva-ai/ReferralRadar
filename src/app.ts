@@ -8,6 +8,7 @@ import { logger } from './logger.js'
 import { correlation } from './correlation.js'
 import apiRoutes from './routes/api.js'
 import adminRoutes from './routes/admin.js'
+import adminApiRoutes from './routes/admin-api.js'
 
 declare global {
   namespace Express {
@@ -24,7 +25,7 @@ export function createApp(): express.Express {
 
   app.use(cors({
     origin: config.NODE_ENV === 'production' ? config.CORS_ORIGINS.split(',') : '*',
-    methods: ['GET', 'POST'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
     allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-ID'],
     maxAge: 86400,
   }))
@@ -76,6 +77,7 @@ export function createApp(): express.Express {
 
   app.use('/api/v1', apiRoutes)
   app.use('/api/v1', adminRoutes)
+  app.use('/api/v1', adminApiRoutes)
 
   return app
 }
