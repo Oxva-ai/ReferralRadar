@@ -1,5 +1,6 @@
 import got from 'got'
 import { config } from '../config.js'
+import { isSkipDomain, KNOWN_UK_COMPANIES } from '../lib/blocklist.js'
 import { logger } from '../logger.js'
 import { fetch } from '../services/fetcher.js'
 import { extract } from '../services/extractor.js'
@@ -30,20 +31,6 @@ function getNextQuery(): string {
   const query = UK_QUERIES[queryIndex]!
   queryIndex = (queryIndex + 1) % UK_QUERIES.length
   return query
-}
-
-const SKIP_DOMAINS = [
-  'reddit.com', 'latestdeals.co.uk', 'magicfreebiesuk.co.uk',
-  'becleverwithyourcash.co.uk', 'quidco.com', 'topcashback.co.uk',
-  'hotukdeals.com', 'moneysavingexpert.com',
-  'myvouchercodes.co.uk', 'vouchercodes.co.uk',
-]
-
-function isSkippable(link: string): boolean {
-  try {
-    const hostname = new URL(link).hostname.replace(/^www\./, '')
-    return SKIP_DOMAINS.some(d => hostname.endsWith(d))
-  } catch { return true }
 }
 
 async function serperSearch(query: string): Promise<SearchResult[]> {
@@ -105,7 +92,7 @@ export async function run(): Promise<void> {
       const serperResults = await serperSearch(query)
       for (const result of serperResults) {
         processed++
-        if (isSkippable(result.link)) continue
+        if (isSkipDomain(result.link)) continue
 
         const ukCheck = checkUkMarket(result.link, result.title + ' ' + result.snippet)
         if (!ukCheck.pass) continue
@@ -126,7 +113,7 @@ export async function run(): Promise<void> {
       const braveResults = await braveSearch(query)
       for (const result of braveResults) {
         processed++
-        if (isSkippable(result.link)) continue
+        if (isSkipDomain(result.link)) continue
 
         const ukCheck = checkUkMarket(result.link, result.title + ' ' + result.snippet)
         if (!ukCheck.pass) continue

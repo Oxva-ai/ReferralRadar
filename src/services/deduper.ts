@@ -1,6 +1,7 @@
 import { logger } from '../logger.js'
 import { computeContentHash } from '../lib/hash.js'
 import { pool } from '../db/pool.js'
+import { isSkipDomain } from '../lib/blocklist.js'
 import {
   findReferralBySourceUrl,
   findReferralByContentHash,
@@ -117,6 +118,29 @@ export async function storeReferral(
   redditScore?: number | null,
   redditComments?: number | null,
 ): Promise<string | null> {
+  // Quality gate: reject known spam domains
+  if (isSkipDomain(url)) {
+    logger.debug({ url }, 'quality gate: blocked domain')
+    return null
+  }
+
+  // Quality gate: must have at least one of: GBP amount, referral link, or UK TLD
+  const hasValue = extracted.rewardNumeric !== null
+  const hasLink = extracted.referralLink !== null
+  const hasCoUk = url.includes('.co.uk') || url.includes('.uk/')
+  if (!hasValue && !hasLink && !hasCoUk) {
+    logger.debug({ url, rewardType: extracted.rewardType }, 'quality gate: no GBP, no link, no UK TLD')
+    return null
+  }
+
+  // Quality gate: company name must be meaningful
+  const name = extracted.companyName ?? ''
+  const junkNames = ['home', 'i', 'me', 'my', 'refer', 'get a referral', 'referral code', 'join', 'sign up']
+  if (!name || name.length < 2 || junkNames.includes(name.toLowerCase())) {
+    logger.debug({ url, companyName: name }, 'quality gate: bad company name')
+    return null
+  }
+
   const dedupResult = await checkDedup(url, extracted.offerText, extracted.companyName, extractDomain(url))
 
   if (dedupResult.action === 'skip') {

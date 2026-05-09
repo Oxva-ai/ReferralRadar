@@ -3,6 +3,7 @@ import { logger } from '../logger.js'
 import { fetch } from '../services/fetcher.js'
 import { extract } from '../services/extractor.js'
 import { checkUkMarket } from '../services/uk-filter.js'
+import { isSkipDomain } from '../lib/blocklist.js'
 import { storeReferral } from '../services/deduper.js'
 import { insertWorkerRun, completeWorkerRun, failWorkerRun } from '../db/queries.js'
 
@@ -54,17 +55,6 @@ const TERTIARY_SUBS: Array<{ sub: string; endpoint: string }> = [
   { sub: 'r/referralcodes', endpoint: '/r/referralcodes/search.json?q=UK+OR+£&sort=new&restrict_sr=on&limit=25' },
 ]
 
-const AGGREGATOR_DOMAINS = [
-  'reddit.com', 'hotukdeals.com', 'moneysavingexpert.com',
-  'latestdeals.co.uk', 'magicfreebiesuk.co.uk', 'vouchercodes.co.uk',
-  'myvouchercodes.co.uk', 'quidco.com', 'topcashback.co.uk',
-]
-
-const SKIP_URL_PATTERNS = [
-  /comment\.html$/,
-  /\/comments\//,
-]
-
 const SATURATION_THRESHOLD_SCORE = 50
 const SATURATION_THRESHOLD_COMMENTS = 20
 
@@ -79,19 +69,6 @@ function extractUrls(text: string): string[] {
     urls.push(match[0]!)
   }
   return urls
-}
-
-function isAggregatorUrl(url: string): boolean {
-  try {
-    const hostname = new URL(url).hostname.replace(/^www\./, '')
-    return AGGREGATOR_DOMAINS.some(d => hostname.endsWith(d))
-  } catch {
-    return true
-  }
-}
-
-function isSkippableUrl(url: string): boolean {
-  return SKIP_URL_PATTERNS.some(p => p.test(url))
 }
 
 function getPostId(url: string): string | null {
@@ -140,10 +117,9 @@ async function processPost(post: RedditPost): Promise<number> {
 
   // Extract URLs from selftext
   const urls = extractUrls(post.selftext)
-    .filter(u => !isAggregatorUrl(u) && !isSkippableUrl(u))
+    .filter(u => !isSkipDomain(u))
 
-  // Also process the linked URL if it is not a Reddit self post
-  if (post.url && !post.url.includes('reddit.com') && !isAggregatorUrl(post.url) && !isSkippableUrl(post.url)) {
+  if (post.url && !post.url.includes('reddit.com') && !isSkipDomain(post.url)) {
     urls.unshift(post.url)
   }
 
