@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { pool } from '../db/pool.js'
 import { logger } from '../logger.js'
@@ -54,14 +55,14 @@ router.get('/admin/blocklist', async (req: Request, res: Response) => {
     const result = await pool.query<{ domain: string; added_at: string }>(
       'SELECT domain, added_at FROM blocked_domains ORDER BY added_at DESC',
     )
-    return res.json({ domains: result.rows })
+    return res.json({ data: result.rows })
   } catch (err) {
     logger.error({ err }, 'failed to list blocked domains')
     return res.status(500).json({ error: 'internal server error' })
   }
 })
 
-router.post('/admin/blocklist/add', async (req: Request, res: Response) => {
+router.post('/admin/blocklist', async (req: Request, res: Response) => {
   if (!req.isAdmin) {
     return res.status(401).json({ error: 'admin access required' })
   }
@@ -73,12 +74,34 @@ router.post('/admin/blocklist/add', async (req: Request, res: Response) => {
       'INSERT INTO blocked_domains (domain) VALUES ($1) ON CONFLICT (domain) DO NOTHING',
       [body.domain],
     )
-    return res.json({ status: 'ok' })
+    return res.status(201).json({ status: 'added', domain: body.domain })
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'validation failed', details: err.errors })
     }
     logger.error({ err }, 'failed to add blocked domain')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.delete('/admin/blocklist/:domain', async (req: Request, res: Response) => {
+  if (!req.isAdmin) {
+    return res.status(401).json({ error: 'admin access required' })
+  }
+
+  try {
+    const domain = decodeURIComponent(req.params.domain as string)
+    await ensureBlockedDomainsTable()
+    const result = await pool.query(
+      'DELETE FROM blocked_domains WHERE domain = $1 RETURNING domain',
+      [domain],
+    )
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'not_found' })
+    }
+    return res.json({ status: 'deleted', domain: result.rows[0].domain })
+  } catch (err) {
+    logger.error({ err }, 'failed to delete blocked domain')
     return res.status(500).json({ error: 'internal server error' })
   }
 })
@@ -100,7 +123,7 @@ router.post('/admin/referrals/batch-categorize', async (req: Request, res: Respo
       `UPDATE referrals SET category = $1, updated_at = NOW() WHERE id IN (${placeholders}) AND is_active = true`,
       [body.category, ...body.ids],
     )
-    return res.json({ updated: result.rowCount ?? 0 })
+    return res.json({ status: 'ok', updated: result.rowCount ?? 0 })
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'validation failed', details: err.errors })
@@ -171,7 +194,7 @@ router.patch('/admin/referrals/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'referral not found' })
     }
 
-    return res.json(result.rows[0])
+    return res.json({ status: 'ok', data: result.rows[0] })
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'validation failed', details: err.errors })
@@ -246,7 +269,7 @@ router.post('/admin/workers/:workerName/restart', async (req: Request, res: Resp
     })
 
     logger.info({ worker: workerName, force }, 'worker manually triggered via admin API')
-    return res.json({ status: 'triggered', worker: workerName })
+    return res.json({ status: 'started', worker: workerName })
   } catch (err) {
     logger.error({ err }, 'failed to trigger worker')
     return res.status(500).json({ error: 'internal server error' })
@@ -276,7 +299,7 @@ router.get('/admin/workers/:workerName', async (req: Request, res: Response) => 
        LIMIT 50`,
       [workerName],
     )
-    return res.json({ runs: result.rows })
+    return res.json({ data: result.rows })
   } catch (err) {
     logger.error({ err }, 'failed to fetch worker runs')
     return res.status(500).json({ error: 'internal server error' })
@@ -345,6 +368,77 @@ router.post('/admin/brands/reload', async (req: Request, res: Response) => {
     return res.json({ status: 'reloaded' })
   } catch (err) {
     logger.error({ err }, 'failed to reload brands')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.post('/admin/keys/rotate', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+
+  try {
+    const { type } = req.body ?? {}
+    const keyType = type === 'easyearns' ? 'easyearns_api_key' : 'admin_api_key'
+    const previousKeyType = keyType + '_previous'
+    const rotatedKeyType = keyType + '_rotated_at'
+
+    const currentResult = await pool.query<{ key: string; value: string }>(
+      'SELECT key, value FROM app_config WHERE key = $1',
+      [keyType],
+    )
+
+    if (currentResult.rows[0]) {
+      await pool.query(
+        `INSERT INTO app_config (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+        [previousKeyType, currentResult.rows[0].value],
+      )
+    }
+
+    const newKey = randomUUID().replace(/-/g, '').slice(0, 32)
+
+    await pool.query(
+      `INSERT INTO app_config (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+      [keyType, newKey],
+    )
+
+    await pool.query(
+      `INSERT INTO app_config (key, value) VALUES ($1, NOW()::text)
+       ON CONFLICT (key) DO UPDATE SET value = NOW()::text, updated_at = NOW()`,
+      [rotatedKeyType],
+    )
+
+    logger.info({ keyType }, 'API key rotated successfully')
+    return res.json({
+      status: 'rotated',
+      type: keyType,
+      key: newKey,
+      warning: 'Update your .env file with the new key. The old key remains valid for the grace period.',
+    })
+  } catch (err) {
+    logger.error({ err }, 'key rotation failed')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.get('/admin/keys/status', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+
+  try {
+    const result = await pool.query<{ key: string; value: string }>(
+      "SELECT key, value FROM app_config WHERE key LIKE '%api_key%' ORDER BY key",
+    )
+
+    const keys: Record<string, unknown> = {}
+    for (const row of result.rows) {
+      keys[row.key] = row.key.endsWith('_previous') || row.key.endsWith('_rotated_at')
+        ? row.value
+        : '••••••••'
+    }
+
+    return res.json({ data: keys })
+  } catch (err) {
+    logger.error({ err }, 'key status check failed')
     return res.status(500).json({ error: 'internal server error' })
   }
 })

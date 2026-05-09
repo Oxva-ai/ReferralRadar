@@ -16,6 +16,9 @@ const envSchema = z.object({
   LOGO_DEV_TOKEN: z.string().min(1).default('pk_Rz_wcJe5S7qjtTJ_lxODDQ'),
   EASYEARNS_STAGING_ORIGINS: z.string().default(''),
   CATEGORY_CACHE_TTL: z.coerce.number().int().default(300),
+  REFERRAL_RETENTION_DAYS: z.coerce.number().int().default(365),
+  EVENT_RETENTION_DAYS: z.coerce.number().int().default(90),
+  KEY_ROTATION_GRACE_DAYS: z.coerce.number().int().default(7),
 })
 
 export type Config = z.infer<typeof envSchema>

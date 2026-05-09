@@ -157,6 +157,23 @@ railway up
 
 ---
 
+### Timezones
+
+All timestamps are stored as `TIMESTAMPTZ` (UTC) in the database. API responses return ISO 8601 strings. Display in any timezone by converting client-side.
+
+### Data retention
+
+| Data | Retention |
+|------|-----------|
+| Referrals | 365 days then soft-deleted |
+| Click/impression events | 90 days then removed |
+| Worker logs, search queries, dead letters, webhook deliveries | 30 days |
+| Pending submissions | 7 days |
+
+Configure via `REFERRAL_RETENTION_DAYS` and `EVENT_RETENTION_DAYS` env vars.
+
+---
+
 ## License
 
 Internal — Easyearns.com

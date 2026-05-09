@@ -81,6 +81,7 @@ async function main() {
   // Daily maintenance
   scheduler.schedule('0 0 * * *', 'reset-quotas', resetDailyQuotas)
   scheduler.schedule('0 */6 * * *', 'purge-expired', purgeExpired)
+  scheduler.schedule('0 3 * * *', 'gdpr-cleanup', gdprRetentionCleanup)
 
   scheduler.start()
   logger.info('all workers scheduled')
@@ -103,6 +104,49 @@ async function purgeExpired() {
   await pool.query('SELECT trim_worker_runs()')
   await pool.query(`DELETE FROM submissions WHERE created_at < NOW() - INTERVAL '7 days' AND status = 'pending'`)
   await pool.query("DELETE FROM reddit_processed_posts WHERE processed_at < NOW() - INTERVAL '48 hours'")
+}
+
+async function gdprRetentionCleanup() {
+  const referralDays = config.REFERRAL_RETENTION_DAYS
+  const eventDays = config.EVENT_RETENTION_DAYS
+
+  await pool.query(
+    `UPDATE referrals SET is_active = false
+     WHERE is_active = true
+       AND discovered_at < NOW() - INTERVAL '1 day' * $1`,
+    [referralDays],
+  )
+
+  await pool.query(
+    `DELETE FROM click_events WHERE clicked_at < NOW() - INTERVAL '1 day' * $1`,
+    [eventDays],
+  )
+  await pool.query(
+    `DELETE FROM impression_events WHERE impressed_at < NOW() - INTERVAL '1 day' * $1`,
+    [eventDays],
+  )
+
+  await pool.query(
+    "DELETE FROM worker_runs WHERE started_at < NOW() - INTERVAL '30 days'",
+  )
+
+  await pool.query(
+    "DELETE FROM dead_letter_queue WHERE failed_at < NOW() - INTERVAL '30 days'",
+  )
+
+  await pool.query(
+    "DELETE FROM webhook_deliveries WHERE attempted_at < NOW() - INTERVAL '30 days'",
+  )
+
+  await pool.query(
+    "DELETE FROM search_queries WHERE executed_at < NOW() - INTERVAL '30 days'",
+  )
+
+  await pool.query(
+    "DELETE FROM submissions WHERE created_at < NOW() - INTERVAL '30 days' AND status IN ('processed', 'rejected')",
+  )
+
+  logger.info({ referralDays, eventDays }, 'GDPR retention cleanup complete')
 }
 
 function shutdown(signal: string) {

@@ -18,6 +18,12 @@ import { getAllQuotaUsage } from '../services/quota-tracker.js'
 
 const router = Router()
 
+router.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-API-Version', '1.0.0')
+  res.setHeader('X-Deprecated', 'false')
+  next()
+})
+
 function setCacheHeaders(res: Response, maxAgeSeconds: number = 60): void {
   res.setHeader('Cache-Control', `public, max-age=${maxAgeSeconds}, stale-while-revalidate=${maxAgeSeconds * 2}`)
 }

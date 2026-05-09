@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS referrals (
   expires_at        TIMESTAMPTZ,
   is_active         BOOLEAN DEFAULT TRUE,
   is_aggregator     BOOLEAN DEFAULT FALSE,
+  category          TEXT,
   verification_failures INTEGER DEFAULT 0,
   notes             TEXT,
   referee_reward    TEXT,
@@ -211,17 +212,6 @@ CREATE TABLE IF NOT EXISTS blocked_domains (
   added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Brand directory (replaces static brands.ts data)
-CREATE TABLE IF NOT EXISTS brands (
-  name                TEXT NOT NULL,
-  domain              TEXT PRIMARY KEY,
-  category            TEXT NOT NULL,
-  likely_referral_page TEXT,
-  is_active           BOOLEAN DEFAULT TRUE,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 -- Seed default config
 INSERT INTO app_config (key, value) VALUES
   ('score_weight_freshness',   '0.25'),
@@ -331,3 +321,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_referrals_reddit_post ON referrals(reddit_
 CREATE INDEX IF NOT EXISTS idx_click_events_clicked_at  ON click_events(clicked_at);
 CREATE INDEX IF NOT EXISTS idx_referrals_verification_stale ON referrals(last_verified_at ASC NULLS FIRST, verification_failures ASC) WHERE is_active = true AND source_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_submissions_pending_stuck ON submissions(created_at ASC) WHERE status = 'pending';
+
+-- Row Level Security
+ALTER TABLE referrals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE monitored_pages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE offer_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE api_usage ENABLE ROW LEVEL SECURITY;
+ALTER TABLE submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE worker_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE click_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE impression_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE search_queries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dead_letter_queue ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reddit_processed_posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE blocked_domains ENABLE ROW LEVEL SECURITY;
+ALTER TABLE brands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhook_deliveries ENABLE ROW LEVEL SECURITY;

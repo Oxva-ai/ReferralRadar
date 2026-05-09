@@ -4,7 +4,7 @@ import rateLimit from 'express-rate-limit'
 import { timingSafeEqual } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
 import { config } from './config.js'
-import { logger } from './logger.js'
+import { pool } from './db/pool.js'
 import { correlation } from './correlation.js'
 import apiRoutes from './routes/api.js'
 import adminRoutes from './routes/admin.js'
@@ -49,18 +49,11 @@ export function createApp(): express.Express {
     correlation.run(requestId, next)
   })
 
-  app.use('/api/v1', (req, res, next) => {
+  app.use('/api/v1', async (req, res, next) => {
     if (req.path === '/health') return next()
-    const headerKey = req.headers.authorization?.replace('Bearer ', '') ?? ''
-    const queryKey = (req.query.key as string) ?? ''
-    const key = headerKey || queryKey
-
+    const key = req.headers.authorization?.replace('Bearer ', '') ?? ''
     if (!key) {
       return res.status(401).json({ error: 'unauthorized' })
-    }
-
-    if (queryKey && !headerKey) {
-      logger.warn('API key provided via query param — use Authorization: Bearer <key> header instead')
     }
 
     const keyBuf = Buffer.from(key)
@@ -77,6 +70,30 @@ export function createApp(): express.Express {
       && timingSafeEqual(keyBuf, adminBuf)
 
     if (!isEasyearns && !isAdmin) {
+      try {
+        const prevKeys = await pool.query<{ key: string; value: string }>(
+          "SELECT key, value FROM app_config WHERE key IN ('easyearns_api_key_previous', 'admin_api_key_previous')",
+        )
+        const easyearnsPrev = prevKeys.rows.find(r => r.key === 'easyearns_api_key_previous')?.value
+        const adminPrev = prevKeys.rows.find(r => r.key === 'admin_api_key_previous')?.value
+
+        if (easyearnsPrev) {
+          const eb = Buffer.from(easyearnsPrev)
+          if (keyBuf.length === eb.length && timingSafeEqual(keyBuf, eb)) {
+            req.isAdmin = false
+            return next()
+          }
+        }
+        if (adminPrev) {
+          const ab = Buffer.from(adminPrev)
+          if (keyBuf.length === ab.length && timingSafeEqual(keyBuf, ab)) {
+            req.isAdmin = true
+            return next()
+          }
+        }
+      } catch {
+        // DB not available, fall through to rejection
+      }
       return res.status(401).json({ error: 'unauthorized' })
     }
 
