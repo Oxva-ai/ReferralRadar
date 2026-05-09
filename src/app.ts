@@ -52,11 +52,18 @@ export function createApp(): express.Express {
   app.use('/api/v1', (req, res, next) => {
     if (req.path === '/health') return next()
     const headerKey = req.headers.authorization?.replace('Bearer ', '') ?? ''
-    if (!headerKey) {
+    const queryKey = (req.query.key as string) ?? ''
+    const key = headerKey || queryKey
+
+    if (!key) {
       return res.status(401).json({ error: 'unauthorized' })
     }
 
-    const keyBuf = Buffer.from(headerKey)
+    if (queryKey && !headerKey) {
+      logger.warn('API key provided via query param — use Authorization: Bearer <key> header instead')
+    }
+
+    const keyBuf = Buffer.from(key)
     const easyearnsBuf = Buffer.from(config.EASYEARNS_API_KEY)
     const adminBuf = Buffer.from(config.ADMIN_API_KEY)
 
