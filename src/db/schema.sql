@@ -167,6 +167,25 @@ CREATE TABLE IF NOT EXISTS dead_letter_queue (
   failed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS queue_jobs (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url             TEXT NOT NULL,
+  source          VARCHAR(50) NOT NULL,
+  priority        VARCHAR(10) NOT NULL DEFAULT 'low' CHECK (priority IN ('high', 'low')),
+  status          VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+  uk_signal       VARCHAR(10) DEFAULT 'unknown',
+  attempts        INTEGER DEFAULT 0,
+  max_attempts    INTEGER DEFAULT 3,
+  reddit_post_id  TEXT,
+  reddit_score    INTEGER,
+  reddit_comments INTEGER,
+  submission_id   UUID,
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  started_at      TIMESTAMPTZ,
+  completed_at    TIMESTAMPTZ
+);
+
 -- Brands directory (admin-managed, replaces static brands.ts data)
 CREATE TABLE IF NOT EXISTS brands (
   name              TEXT NOT NULL,
@@ -337,5 +356,6 @@ ALTER TABLE dead_letter_queue ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reddit_processed_posts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE blocked_domains ENABLE ROW LEVEL SECURITY;
 ALTER TABLE brands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE queue_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE webhooks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE webhook_deliveries ENABLE ROW LEVEL SECURITY;

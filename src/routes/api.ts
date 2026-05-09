@@ -10,7 +10,7 @@ import {
   getHealthStats,
   type ReferralRow,
 } from '../db/queries.js'
-import { queue } from '../services/queue.js'
+import { queue, enqueueJobToDb } from '../services/queue.js'
 import { pool } from '../db/pool.js'
 import { getDegradedFeeds } from '../workers/rss.js'
 import { BRAND_BY_DOMAIN } from '../lib/brands.js'
@@ -332,11 +332,7 @@ router.post('/submissions', async (req: Request, res: Response) => {
     )
     const submissionId = subResult.rows[0]!.id
 
-    queue.enqueue({
-      url: parsed.data.url,
-      source: 'user_submission',
-      meta: { submission_id: submissionId },
-    }, 'high')
+    await enqueueJobToDb(parsed.data.url, 'user_submission', 'high', 'unknown', null, null, null, submissionId)
 
     res.status(201).json({ status: 'queued' })
     return

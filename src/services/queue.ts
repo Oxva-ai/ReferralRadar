@@ -2,94 +2,143 @@ import { logger } from '../logger.js'
 import { fetch } from './fetcher.js'
 import { extract } from './extractor.js'
 import { storeReferral } from './deduper.js'
-import { updateSubmissionStatus, enqueueDeadLetter } from '../db/queries.js'
+import { enqueueJob, dequeueJobs, completeJob, retryOrDeadLetter, recoverStuckQueueJobs, updateSubmissionStatus, type QueueJob } from '../db/queries.js'
 
-interface Job {
-  url: string
-  source: string
-  ukSignal?: string
-  retryCount?: number
-  meta: {
-    reddit_post_id?: string
-    reddit_score?: number
-    reddit_comments?: number
-    feed_guid?: string
-    search_query?: string
-    submission_id?: string
-    submitter?: string
-  }
-}
-
-const LOW_MAX = 500
-const HIGH_MAX = 50
 const CONCURRENCY = 3
+const POLL_INTERVAL_MS = 5_000
 const TIMEOUT_MS = 30_000
 
-class PriorityQueue {
-  private high: Array<Job> = []
-  private low: Array<Job> = []
+class DurableQueue {
   private processing = 0
+  private running = false
+  private timer: ReturnType<typeof setInterval> | null = null
 
-  enqueue(item: Job, priority: 'high' | 'low' = 'low'): boolean {
-    const target = priority === 'high' ? this.high : this.low
-    const max = priority === 'high' ? HIGH_MAX : LOW_MAX
-    if (target.length >= max) {
-      logger.warn({ queueType: priority, size: target.length }, 'queue full')
-      return false
+  async start(): Promise<void> {
+    if (this.running) return
+    this.running = true
+
+    try {
+      const stuck = await recoverStuckQueueJobs()
+      if (stuck.length > 0) {
+        logger.info({ count: stuck.length }, 'recovered stuck queue jobs')
+      }
+    } catch (err) {
+      logger.warn({ err }, 'queue recovery failed')
     }
-    target.push(item)
-    this.drain()
-    return true
+
+    this.poll()
+    this.timer = setInterval(() => this.poll(), POLL_INTERVAL_MS)
+    logger.info({ concurrency: CONCURRENCY, pollInterval: POLL_INTERVAL_MS }, 'durable queue started')
   }
 
-  private async drain() {
+  stop(): void {
+    this.running = false
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+    logger.info('queue stopped')
+  }
+
+  private async poll(): Promise<void> {
+    if (!this.running) return
+
     while (this.processing < CONCURRENCY) {
-      const item = this.high.shift() ?? this.low.shift()
-      if (!item) break
+      const jobs = await dequeueJobs(1)
+      if (jobs.length === 0) break
+
+      const job = jobs[0]!
       this.processing++
-      this.process(item).finally(() => {
+      this.processJob(job).finally(() => {
         this.processing--
-        this.drain()
       })
     }
   }
 
-  private async process(item: Job) {
+  private async processJob(job: QueueJob): Promise<void> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
     try {
-      const { html } = await fetch(item.url, { signal: controller.signal })
-      const extracted = await extract(html, item.url)
-      if (!extracted) return
-      // UK filter check happens upstream before enqueue; store directly
-      await storeReferral(
-        item.url,
+      const { html } = await fetch(job.url, { signal: controller.signal })
+      const extracted = await extract(html, job.url)
+      if (!extracted) {
+        await completeJob(job.id)
+        return
+      }
+
+      const storedId = await storeReferral(
+        job.url,
         extracted,
-        item.source,
-        item.ukSignal ?? 'unknown',
-        item.meta.reddit_post_id,
-        item.meta.reddit_score,
-        item.meta.reddit_comments,
+        job.source,
+        job.uk_signal ?? 'unknown',
+        job.reddit_post_id,
+        job.reddit_score,
+        job.reddit_comments,
       )
 
-      // Update submission status if this was a user submission
-      if (item.source === 'user_submission' && item.meta.submission_id) {
-        await updateSubmissionStatus(item.meta.submission_id as string, 'processed')
+      await completeJob(job.id)
+
+      if (job.submission_id && storedId) {
+        await updateSubmissionStatus(job.submission_id, 'processed', storedId)
       }
     } catch (err) {
-      logger.warn({ err, url: item.url }, 'queue processing failed')
-      // Move user submissions to dead letter after 3 failed attempts
-      if (item.source === 'user_submission' && (item.retryCount ?? 0) >= 2) {
-        await enqueueDeadLetter(item.url, item.source, String(err), item.retryCount ?? 0)
-        logger.warn({ url: item.url, retryCount: item.retryCount }, 'user submission moved to dead letter queue')
+      const errMsg = String(err)
+      logger.warn({ err, url: job.url, jobId: job.id }, 'queue job failed')
+
+      const result = await retryOrDeadLetter(job.id, errMsg)
+
+      if (result === 'dead') {
+        logger.warn({ url: job.url, jobId: job.id, attempts: job.attempts }, 'job moved to dead letter queue')
+        if (job.submission_id) {
+          await updateSubmissionStatus(job.submission_id, 'rejected', null, errMsg)
+        }
+      } else if (result === 'retry') {
+        await enqueueJob({
+          url: job.url,
+          source: job.source,
+          priority: job.attempts >= 2 ? 'low' : job.priority,
+          ukSignal: job.uk_signal,
+          redditPostId: job.reddit_post_id,
+          redditScore: job.reddit_score,
+          redditComments: job.reddit_comments,
+          submissionId: job.submission_id ?? undefined,
+        })
       }
     } finally {
       clearTimeout(timer)
     }
   }
 
-  get size() { return this.high.length + this.low.length }
-  get active() { return this.processing }
+  get size(): number {
+    return this.processing
+  }
+
+  get active(): number {
+    return this.processing
+  }
 }
 
-export const queue = new PriorityQueue()
+export const queue = new DurableQueue()
+
+export async function enqueueJobToDb(
+  url: string,
+  source: string,
+  priority: 'high' | 'low' = 'low',
+  ukSignal?: string,
+  redditPostId?: string | null,
+  redditScore?: number | null,
+  redditComments?: number | null,
+  submissionId?: string | null,
+): Promise<string> {
+  return enqueueJob({
+    url,
+    source,
+    priority,
+    ukSignal,
+    redditPostId,
+    redditScore,
+    redditComments,
+    submissionId,
+  })
+}

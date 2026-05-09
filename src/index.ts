@@ -10,7 +10,6 @@ import { run as brandSearchWorker } from './workers/brand-search.js'
 import { run as competitorWorker } from './workers/competitor.js'
 import { run as rssWorker, runSecondary as rssSecondaryWorker, runTertiary as rssTertiaryWorker } from './workers/rss.js'
 import { run as pageMonitorWorker } from './workers/page-monitor.js'
-import { getStuckSubmissions } from './db/queries.js'
 import { queue } from './services/queue.js'
 import { runRescore, runEngagementAggregation } from './workers/rescore.js'
 import { run as verifierWorker } from './workers/verifier.js'
@@ -18,28 +17,8 @@ import { run as urlGuesserWorker } from './workers/url-guesser.js'
 
 let server: Server
 
-async function recoverStuckSubmissions() {
-  try {
-    const stuck = await getStuckSubmissions()
-    for (const sub of stuck) {
-      queue.enqueue({
-        url: sub.url,
-        source: 'user_submission',
-        meta: { submission_id: sub.id },
-      }, 'high')
-      logger.info({ id: sub.id, url: sub.url }, 'recovered stuck submission')
-    }
-    if (stuck.length > 0) {
-      logger.info({ count: stuck.length }, 'stuck submission recovery complete')
-    }
-  } catch (err) {
-    logger.error({ err }, 'stuck submission recovery failed')
-  }
-}
-
 async function main() {
   const app = createApp()
-  await recoverStuckSubmissions()
   server = app.listen(config.PORT, () => {
     logger.info({ port: config.PORT, env: config.NODE_ENV }, 'server started')
   })
@@ -83,6 +62,7 @@ async function main() {
   scheduler.schedule('0 */6 * * *', 'purge-expired', purgeExpired)
   scheduler.schedule('0 3 * * *', 'gdpr-cleanup', gdprRetentionCleanup)
 
+  await queue.start()
   scheduler.start()
   logger.info('all workers scheduled')
 }
@@ -151,6 +131,7 @@ async function gdprRetentionCleanup() {
 
 function shutdown(signal: string) {
   logger.info({ signal }, 'shutting down')
+  queue.stop()
   scheduler.stop()
   server.close(() => {
     pool.end()

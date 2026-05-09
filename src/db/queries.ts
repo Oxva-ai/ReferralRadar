@@ -1,6 +1,133 @@
 import { pool } from './pool.js'
 import type { QueryResult } from 'pg'
 
+export interface QueueJob {
+  id: string
+  url: string
+  source: string
+  priority: 'high' | 'low'
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  uk_signal: string
+  attempts: number
+  max_attempts: number
+  reddit_post_id: string | null
+  reddit_score: number | null
+  reddit_comments: number | null
+  submission_id: string | null
+  error_message: string | null
+  created_at: Date
+  started_at: Date | null
+  completed_at: Date | null
+}
+
+export interface EnqueueJobInput {
+  url: string
+  source: string
+  priority?: 'high' | 'low' | undefined
+  ukSignal?: string | undefined
+  redditPostId?: string | null | undefined
+  redditScore?: number | null | undefined
+  redditComments?: number | null | undefined
+  submissionId?: string | null | undefined
+}
+
+export async function enqueueJob(input: EnqueueJobInput): Promise<string> {
+  const result = await pool.query<{ id: string }>(
+    `INSERT INTO queue_jobs (url, source, priority, uk_signal, reddit_post_id, reddit_score, reddit_comments, submission_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id`,
+    [
+      input.url,
+      input.source,
+      input.priority ?? 'low',
+      input.ukSignal ?? 'unknown',
+      input.redditPostId ?? null,
+      input.redditScore ?? null,
+      input.redditComments ?? null,
+      input.submissionId ?? null,
+    ],
+  )
+  return result.rows[0]!.id
+}
+
+export async function dequeueJobs(limit: number): Promise<QueueJob[]> {
+  const result = await pool.query<QueueJob>(
+    `WITH next_jobs AS (
+       SELECT id FROM queue_jobs
+       WHERE status = 'pending'
+       ORDER BY CASE WHEN priority = 'high' THEN 0 ELSE 1 END, created_at ASC
+       LIMIT $1
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE queue_jobs SET status = 'processing', started_at = NOW(), attempts = attempts + 1
+     FROM next_jobs
+     WHERE queue_jobs.id = next_jobs.id
+     RETURNING queue_jobs.*`,
+    [limit],
+  )
+  return result.rows
+}
+
+export async function completeJob(id: string): Promise<void> {
+  await pool.query(
+    `UPDATE queue_jobs SET status = 'completed', completed_at = NOW() WHERE id = $1`,
+    [id],
+  )
+}
+
+export async function failJob(id: string, errorMessage: string): Promise<void> {
+  await pool.query(
+    `UPDATE queue_jobs SET status = 'failed', error_message = $2, completed_at = NOW() WHERE id = $1`,
+    [id, errorMessage],
+  )
+}
+
+export async function retryOrDeadLetter(id: string, errorMessage: string): Promise<'retry' | 'dead'> {
+  const job = await pool.query<QueueJob>(
+    'SELECT attempts, max_attempts, url, source, submission_id FROM queue_jobs WHERE id = $1',
+    [id],
+  )
+  if (job.rows.length === 0) return 'dead'
+
+  const j = job.rows[0]!
+
+  if (j.attempts >= j.max_attempts) {
+    await pool.query(
+      `INSERT INTO dead_letter_queue (url, source, error_message, retry_count)
+       VALUES ($1, $2, $3, $4)`,
+      [j.url, j.source, errorMessage, j.attempts],
+    )
+    await pool.query(
+      `UPDATE queue_jobs SET status = 'failed', error_message = $2, completed_at = NOW() WHERE id = $1`,
+      [id, errorMessage],
+    )
+    return 'dead'
+  }
+
+  await pool.query(
+    `UPDATE queue_jobs SET status = 'pending', error_message = $2, started_at = NULL WHERE id = $1`,
+    [id, errorMessage],
+  )
+  return 'retry'
+}
+
+export async function recoverStuckQueueJobs(minutesStale: number = 5): Promise<QueueJob[]> {
+  const result = await pool.query<QueueJob>(
+    `UPDATE queue_jobs SET status = 'pending', started_at = NULL
+     WHERE status = 'processing' AND started_at < NOW() - INTERVAL '1 minute' * $1
+     RETURNING *`,
+    [minutesStale],
+  )
+  return result.rows
+}
+
+export async function cleanOldQueueJobs(daysOld: number = 7): Promise<void> {
+  await pool.query(
+    `DELETE FROM queue_jobs WHERE status IN ('completed', 'failed') AND completed_at < NOW() - INTERVAL '1 day' * $1`,
+    [daysOld],
+  )
+}
+
 export interface ReferralRow {
   id: string
   source_url: string | null
@@ -431,3 +558,5 @@ export async function getHealthStats() {
     workerRuns: verResult.rows,
   }
 }
+
+
