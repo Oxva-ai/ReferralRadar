@@ -1,8 +1,9 @@
 import { logger } from '../logger.js'
 import { computeContentHash } from '../lib/hash.js'
 import { pool } from '../db/pool.js'
-import { isSkipDomain } from '../lib/blocklist.js'
-import { getCompanyName, getCategory } from '../lib/brands.js'
+import { isSkipDomain, KNOWN_UK_COMPANIES } from '../lib/blocklist.js'
+import { getCompanyName, getCategory, UK_BRANDS } from '../lib/brands.js'
+import { normalizeUrl } from '../lib/url.js'
 import {
   findReferralBySourceUrl,
   findReferralByContentHash,
@@ -24,10 +25,14 @@ export async function checkDedup(
   companyName: string | null,
   domain: string | null,
 ): Promise<DedupResult> {
-  // Layer 1: Exact URL match
-  const urlMatch = await findReferralBySourceUrl(url)
+  // Layer 1: Exact URL match (normalized)
+  const normalizedUrl = normalizeUrl(url)
+  let urlMatch = await findReferralBySourceUrl(normalizedUrl)
+  if (!urlMatch && normalizedUrl !== url) {
+    urlMatch = await findReferralBySourceUrl(url)
+  }
   if (urlMatch) {
-    logger.debug({ url, existingId: urlMatch.id }, 'dedup L1: exact URL match, skipping')
+    logger.debug({ url, normalizedUrl, existingId: urlMatch.id }, 'dedup L1: exact URL match, skipping')
     return { action: 'skip', existingId: urlMatch.id, reason: 'exact_url' }
   }
 
@@ -110,6 +115,54 @@ export async function checkDedup(
   return { action: 'insert' }
 }
 
+function cleanCompanyName(raw: string, domain: string): string {
+  let name = raw.trim()
+
+  if (name.includes('|')) {
+    const parts = name.split('|')
+    for (const part of parts) {
+      const trimmed = part.trim()
+      if (trimmed.length > 2 && trimmed.length < 80) {
+        name = trimmed
+        break
+      }
+    }
+    if (name !== raw.trim()) return cleanCompanyName(name, domain)
+  }
+
+  if (name.includes('—')) {
+    name = name.split('—')[0]!.trim()
+  }
+  if (name.includes('–')) {
+    name = name.split('–')[0]!.trim()
+  }
+
+  name = name.replace(/\s*[-—–]\s*(referral|refer a friend|sign up|signup|invite friends|invite).*$/i, '').trim()
+
+  if (name.length > 40) {
+    const domainRoot = domain.split('.')[0]!
+    const firstWord = name.split(' ')[0]!
+    if (firstWord.toLowerCase() === domainRoot.toLowerCase()) {
+      return firstWord.charAt(0).toUpperCase() + firstWord.slice(1)
+    }
+    return domainRoot.charAt(0).toUpperCase() + domainRoot.slice(1)
+  }
+
+  const knownNames = Object.values(KNOWN_UK_COMPANIES)
+  for (const brand of UK_BRANDS) {
+    if (!knownNames.includes(brand.name)) {
+      knownNames.push(brand.name)
+    }
+  }
+  for (const brandName of knownNames) {
+    if (brandName.length > 3 && name.toLowerCase().includes(brandName.toLowerCase())) {
+      return brandName
+    }
+  }
+
+  return name
+}
+
 export async function storeReferral(
   url: string,
   extracted: ExtractionResult,
@@ -119,30 +172,37 @@ export async function storeReferral(
   redditScore?: number | null,
   redditComments?: number | null,
 ): Promise<string | null> {
+  const normalizedUrl = normalizeUrl(url)
+
   // Quality gate: reject known spam domains
-  if (isSkipDomain(url)) {
-    logger.debug({ url }, 'quality gate: blocked domain')
+  if (isSkipDomain(normalizedUrl)) {
+    logger.debug({ url: normalizedUrl }, 'quality gate: blocked domain')
     return null
   }
 
   // Quality gate: must have at least one of: GBP amount, referral link, or UK TLD
   const hasValue = extracted.rewardNumeric !== null
   const hasLink = extracted.referralLink !== null
-  const hasCoUk = url.includes('.co.uk') || url.includes('.uk/')
+  const hasCoUk = normalizedUrl.includes('.co.uk') || normalizedUrl.includes('.uk/')
   if (!hasValue && !hasLink && !hasCoUk) {
-    logger.debug({ url, rewardType: extracted.rewardType }, 'quality gate: no GBP, no link, no UK TLD')
+    logger.debug({ url: normalizedUrl, rewardType: extracted.rewardType }, 'quality gate: no GBP, no link, no UK TLD')
     return null
   }
 
   // Quality gate: company name must be meaningful
-  const name = extracted.companyName ?? ''
+  const rawName = extracted.companyName ?? ''
+  const domain = extractDomain(normalizedUrl) ?? ''
+  const name = cleanCompanyName(rawName, domain)
   const junkNames = ['home', 'i', 'me', 'my', 'refer', 'get a referral', 'referral code', 'join', 'sign up']
   if (!name || name.length < 2 || junkNames.includes(name.toLowerCase())) {
-    logger.debug({ url, companyName: name }, 'quality gate: bad company name')
+    logger.debug({ url: normalizedUrl, companyName: name }, 'quality gate: bad company name')
     return null
   }
 
-  const dedupResult = await checkDedup(url, extracted.offerText, extracted.companyName, extractDomain(url))
+  // Override extracted company name with cleaned version for dedup
+  const extractionForDedup: ExtractionResult = { ...extracted, companyName: name }
+
+  const dedupResult = await checkDedup(normalizedUrl, extractionForDedup.offerText, extractionForDedup.companyName, domain)
 
   if (dedupResult.action === 'skip') {
     return dedupResult.existingId ?? null
@@ -159,7 +219,7 @@ export async function storeReferral(
          AND NOT ($1 = ANY(sources))`,
       [source, dedupResult.existingId],
     )
-    logger.info({ id: dedupResult.existingId, url, source }, 'merged into existing referral')
+    logger.info({ id: dedupResult.existingId, url: normalizedUrl, source }, 'merged into existing referral')
     return dedupResult.existingId
   }
 
@@ -171,23 +231,41 @@ export async function storeReferral(
            updated_at = NOW(),
            last_verified_at = NOW()
        WHERE id = $2`,
-      [url, dedupResult.existingId],
+      [normalizedUrl, dedupResult.existingId],
     )
-    logger.info({ id: dedupResult.existingId, url }, 'reactivated referral')
+    logger.info({ id: dedupResult.existingId, url: normalizedUrl }, 'reactivated referral')
     return dedupResult.existingId
   }
 
+  // Same-domain same-source within 1 hour dedup
+  try {
+    const dedupHour = await pool.query<{ id: string }>(
+      `SELECT id FROM referrals WHERE domain = $1 AND sources @> ARRAY[$2] AND is_active = true AND discovered_at > NOW() - INTERVAL '1 hour' LIMIT 1`,
+      [domain, source],
+    )
+    if (dedupHour.rows.length > 0 && dedupHour.rows[0]) {
+      const existingId = dedupHour.rows[0].id
+      await pool.query(
+        `UPDATE referrals SET source_count = source_count + 1, sources = array_append(sources, $1), updated_at = NOW() WHERE id = $2 AND NOT ($1 = ANY(sources))`,
+        [source, existingId],
+      )
+      logger.info({ id: existingId, url: normalizedUrl, source }, 'merged via domain+source 1h dedup')
+      return existingId
+    }
+  } catch {
+    // continue if query fails
+  }
+
   const contentHash = extracted.offerText ? computeContentHash(extracted.offerText) : null
-  const domain = extractDomain(url) ?? ''
 
   // Resolve company name and category from brand list
   const brandName = getCompanyName(domain)
   const category = getCategory(domain)
-  const finalCompanyName = brandName ?? extracted.companyName
+  const finalCompanyName = brandName ?? name
   const finalCategory = category ?? null
 
   const data: InsertReferral = {
-    source_url: url,
+    source_url: normalizedUrl,
     referral_link: extracted.referralLink,
     company_name: finalCompanyName,
     offer_text: extracted.offerText,
@@ -209,7 +287,7 @@ export async function storeReferral(
   }
 
   const row = await insertReferral(data)
-  logger.info({ id: row.id, url, source }, 'stored new referral')
+  logger.info({ id: row.id, url: normalizedUrl, source }, 'stored new referral')
   return row.id
 }
 

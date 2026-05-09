@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio'
 import { logger } from '../logger.js'
+import { BRAND_BY_DOMAIN, UK_BRANDS } from '../lib/brands.js'
 
 export interface ExtractionResult {
   companyName: string | null
@@ -114,25 +115,70 @@ export function extractImageText($: cheerio.CheerioAPI): string[] {
   return altTexts
 }
 
+function cleanDomainName(domain: string): string {
+  let hostname = domain
+  try {
+    hostname = new URL(domain.startsWith('http') ? domain : `https://${domain}`).hostname
+  } catch { /* use as-is */ }
+
+  hostname = hostname.replace(/^www\./, '')
+  const parts = hostname.split('.')
+  const prefixes = new Set(['www', 'app', 'go', 'my', 'get'])
+
+  const meaningful = parts.filter((p, i) => {
+    if (i >= parts.length - 2 && p.length <= 3) return false
+    if (prefixes.has(p.toLowerCase())) return false
+    return true
+  })
+
+  if (meaningful.length === 0 && parts.length >= 3) {
+    meaningful.push(parts[parts.length - 3]!)
+  }
+  if (meaningful.length === 0 && parts.length >= 1) {
+    meaningful.push(parts[0]!)
+  }
+
+  const name = meaningful[0]!
+  return name.charAt(0).toUpperCase() + name.slice(1)
+}
+
 export function extractCompanyName($: cheerio.CheerioAPI, url: string): string {
+  let hostname = ''
+  try {
+    hostname = new URL(url).hostname.replace(/^www\./, '')
+  } catch { /* pass */ }
+
+  // 1. Brand list lookup by domain
+  if (hostname) {
+    const brand = BRAND_BY_DOMAIN[hostname]
+    if (brand) return brand.name
+  }
+
+  // 2. og:site_name
   const ogSite = $('meta[property="og:site_name"]').attr('content')
   if (ogSite && ogSite.length > 2 && ogSite.length < 60) return ogSite.trim()
 
+  // 3. Title with pipe separator — try each part against brand list
   const title = $('title').text().trim()
-  const cleaned = title
-    .replace(/\s*[|\-–—]\s*(Home|Official|UK|United Kingdom|App|Website|Online).*/i, '')
-    .replace(/\s*[|\-–—]\s*$/, '')
-    .trim()
-  const genericTitles = ['home', 'welcome', 'index', 'untitled', 'page', '']
-  if (cleaned.length > 2 && cleaned.length < 60 && !genericTitles.includes(cleaned.toLowerCase())) return cleaned
+  if (title && title.length > 2) {
+    const parts = title.split(/[|\-–—]/)
+    for (const part of parts) {
+      const clean = part.trim()
+      const brand = UK_BRANDS.find(b => b.name.toLowerCase() === clean.toLowerCase())
+      if (brand) return brand.name
+    }
 
-  try {
-    const hostname = new URL(url).hostname.replace(/^www\./, '')
-    const domainName = hostname.split('.')[0]!
-    return domainName.charAt(0).toUpperCase() + domainName.slice(1)
-  } catch {
-    return url
+    // No brand match — use cleaned first part
+    const first = parts[0]!.trim()
+      .replace(/(?:referral|sign\s*up|offer|free|code|promo|discount|voucher|coupon)/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (first.length > 2 && first.length < 60) return first
   }
+
+  // 4. Fallback to clean domain name
+  if (hostname) return cleanDomainName(hostname)
+  return url
 }
 
 export function splitOffers(text: string): string[] {

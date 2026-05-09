@@ -24,6 +24,8 @@ export const SKIP_DOMAINS = [
   // Generic non-referral
   'google.com', 'bing.com', 'yahoo.com',
   // Known spam domains (add as discovered)
+  // Global companies passing UK filter via .co.uk mirror — not UK-specific
+  'rakuten.com', 'tesla.com',
 ]
 
 export function isSkipDomain(url: string): boolean {

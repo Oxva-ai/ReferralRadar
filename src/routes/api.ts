@@ -290,6 +290,10 @@ router.post('/submissions', async (req: Request, res: Response) => {
 })
 
 function formatReferral(row: ReferralRow) {
+  const domain = row.domain ?? ''
+  const base = domain.replace(/^www\./, '').replace(/\.[^.]+$/, '')
+  const brandName = base ? base.charAt(0).toUpperCase() + base.slice(1) : null
+
   return {
     id: row.id,
     source_url: row.source_url,
@@ -309,6 +313,10 @@ function formatReferral(row: ReferralRow) {
     source_count: row.source_count,
     discovered_at: row.discovered_at,
     last_verified_at: row.last_verified_at,
+    category: row.category,
+    has_link: !!row.referral_link,
+    logo_url: domain ? `https://img.logo.dev/${domain}?token=pk_Rz_wcJe5S7qjtTJ_lxODDQ&size=128&format=png&fallback=404` : null,
+    brand: brandName,
   }
 }
 
