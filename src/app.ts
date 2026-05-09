@@ -51,10 +51,12 @@ export function createApp(): express.Express {
 
   app.use('/api/v1', async (req, res, next) => {
     if (req.path === '/health') return next()
-    const key = req.headers.authorization?.replace('Bearer ', '') ?? ''
-    if (!key) {
-      return res.status(401).json({ error: 'unauthorized' })
-    }
+
+    const key = req.headers.authorization?.replace('Bearer ', '')
+      ?? (req.query.key as string)
+      ?? ''
+
+    if (!key) return res.status(401).json({ error: 'unauthorized' })
 
     const keyBuf = Buffer.from(key)
     const easyearnsBuf = Buffer.from(config.EASYEARNS_API_KEY)
