@@ -119,10 +119,9 @@ router.patch('/admin/referrals/:id/review', async (req: Request, res: Response) 
     }
 
     const result = await pool.query(
-      `UPDATE referrals SET review_status = $1, notes = CASE WHEN $2 IS NOT NULL
-       THEN COALESCE(notes || E'\n', '') || $2 ELSE notes END, updated_at = NOW()
-       WHERE id = $3 AND is_active = true RETURNING id, review_status, notes`,
-      [status, notes ?? null, id],
+      `UPDATE referrals SET review_status = $1, updated_at = NOW()
+       WHERE id = $2 AND is_active = true RETURNING id, review_status, notes`,
+      [status, id],
     )
 
     if (result.rowCount === 0) return res.status(404).json({ error: 'not_found' })
