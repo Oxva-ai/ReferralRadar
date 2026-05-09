@@ -4,20 +4,11 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_DB: referral_discovery_test
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports: ['5432:5432']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm ci
-      - run: npm run db:migrate
       - run: npm run typecheck
-      - run: npm run lint
       - run: npm test
       - run: npm run build

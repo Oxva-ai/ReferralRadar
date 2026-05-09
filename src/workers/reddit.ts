@@ -102,7 +102,7 @@ function getPostId(url: string): string | null {
 async function fetchSubreddit(endpoint: string): Promise<RedditPost[]> {
   const url = `${REDDIT_BASE}${endpoint}`
   const headers = {
-    'User-Agent': 'referral-discovery/1.0 (UK referral discovery service)',
+    'User-Agent': 'Mozilla/5.0 (compatible; ReferralRadar/1.0; +https://referralradar-production.up.railway.app)',
     'Accept': 'application/json',
   }
 

@@ -48,7 +48,9 @@ export function createApp(): express.Express {
 
   app.use('/api/v1', (req, res, next) => {
     if (req.path === '/health') return next()
-    const key = req.headers.authorization?.replace('Bearer ', '') ?? ''
+    const headerKey = req.headers.authorization?.replace('Bearer ', '') ?? ''
+    const queryKey = (req.query.key as string) ?? ''
+    const key = headerKey || queryKey
 
     // timingSafeEqual requires equal-length buffers — pad shorter key
     const keyBuf = Buffer.from(key)
