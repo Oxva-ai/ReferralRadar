@@ -106,6 +106,73 @@ router.delete('/admin/blocklist/:domain', async (req: Request, res: Response) =>
   }
 })
 
+router.patch('/admin/referrals/:id/review', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+
+  try {
+    const id = req.params.id as string
+    const { status, notes } = req.body ?? {}
+
+    const validStatuses = ['pending', 'approved', 'rejected', 'needs_fix']
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'invalid status', valid: validStatuses })
+    }
+
+    const result = await pool.query(
+      `UPDATE referrals SET review_status = $1, notes = CASE WHEN $2 IS NOT NULL
+       THEN COALESCE(notes || E'\n', '') || $2 ELSE notes END, updated_at = NOW()
+       WHERE id = $3 AND is_active = true RETURNING id, review_status, notes`,
+      [status, notes ?? null, id],
+    )
+
+    if (result.rowCount === 0) return res.status(404).json({ error: 'not_found' })
+    return res.json({ status: 'ok', data: result.rows[0] })
+  } catch (err) {
+    logger.error({ err }, 'review update failed')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.get('/admin/referrals/pending-review', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+
+  try {
+    const limit = parseInt(String(req.query.limit)) || 50
+    const result = await pool.query(
+      `SELECT id, company_name, reward, reward_numeric, confidence, review_status, category, discovered_at
+       FROM referrals WHERE is_active = true AND review_status IN ('pending', 'needs_fix')
+       ORDER BY confidence ASC NULLS FIRST, discovered_at DESC LIMIT $1`,
+      [limit],
+    )
+    return res.json({ data: result.rows })
+  } catch (err) {
+    logger.error({ err }, 'pending review query failed')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
+router.post('/admin/referrals/auto-approve', async (req: Request, res: Response) => {
+  if (!req.isAdmin) return res.status(401).json({ error: 'admin access required' })
+
+  try {
+    const { min_confidence } = req.body ?? {}
+    const threshold = parseFloat(min_confidence) || 0.5
+
+    const result = await pool.query(
+      `UPDATE referrals SET review_status = 'approved', updated_at = NOW()
+       WHERE is_active = true AND review_status = 'pending'
+       AND confidence >= $1 AND company_name IS NOT NULL AND reward_numeric IS NOT NULL
+       RETURNING id`,
+      [threshold],
+    )
+
+    return res.json({ status: 'ok', approved: result.rowCount ?? 0, threshold })
+  } catch (err) {
+    logger.error({ err }, 'auto-approve failed')
+    return res.status(500).json({ error: 'internal server error' })
+  }
+})
+
 router.post('/admin/referrals/batch-categorize', async (req: Request, res: Response) => {
   if (!req.isAdmin) {
     return res.status(401).json({ error: 'admin access required' })

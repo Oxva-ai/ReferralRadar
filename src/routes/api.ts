@@ -403,6 +403,7 @@ function formatReferral(row: ReferralRow) {
     is_gambling: row.is_gambling,
     requires_spending: row.requires_spending,
     confidence: row.confidence,
+    review_status: row.review_status ?? 'pending',
     logo_url: domain ? `https://img.logo.dev/${domain}?token=${config.LOGO_DEV_TOKEN}&size=128&format=png&fallback=404` : null,
   }
 }

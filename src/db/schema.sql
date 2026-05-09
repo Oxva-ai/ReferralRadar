@@ -244,6 +244,7 @@ INSERT INTO app_config (key, value) VALUES
   ('brand_search_index',       '0'),
   ('search_query_index',       '0'),
   ('logo_dev_token',           'pk_Rz_wcJe5S7qjtTJ_lxODDQ')
+   ('score_weight_source_rarity',  '0.15')
 ON CONFLICT (key) DO NOTHING;
 
 -- Score materialisation function
@@ -253,18 +254,20 @@ CREATE OR REPLACE FUNCTION compute_score(
   p_source_count INTEGER,
   p_uk_signal VARCHAR,
   p_engagement NUMERIC DEFAULT 0,
-  p_w_fresh NUMERIC DEFAULT 0.25,
-  p_w_novel NUMERIC DEFAULT 0.20,
+  p_sources TEXT[] DEFAULT '{}',
+  p_w_fresh NUMERIC DEFAULT 0.20,
+  p_w_novel NUMERIC DEFAULT 0.15,
   p_w_val NUMERIC DEFAULT 0.20,
   p_w_uk NUMERIC DEFAULT 0.10,
-  p_w_engage NUMERIC DEFAULT 0.25
+  p_w_engage NUMERIC DEFAULT 0.20,
+  p_w_rarity NUMERIC DEFAULT 0.15
 ) RETURNS NUMERIC AS $$
 DECLARE
-  freshness NUMERIC; novelty NUMERIC; val NUMERIC; uk NUMERIC; engagement NUMERIC;
+  freshness NUMERIC; novelty NUMERIC; val NUMERIC; uk NUMERIC; engagement NUMERIC; rarity NUMERIC;
   total_weight NUMERIC;
   effective_fresh NUMERIC; effective_novel NUMERIC;
 BEGIN
-  total_weight := p_w_fresh + p_w_novel + p_w_val + p_w_uk + p_w_engage;
+  total_weight := p_w_fresh + p_w_novel + p_w_val + p_w_uk + p_w_engage + p_w_rarity;
 
   freshness := GREATEST(0, 1 - (EXTRACT(EPOCH FROM (NOW() - p_discovered_at)) / 3600) / 720);
   novelty := CASE
@@ -283,6 +286,15 @@ BEGIN
     WHEN 'weak'       THEN 0.3
     ELSE 0.0
   END;
+  rarity := CASE
+    WHEN 'brand_search' = ANY(p_sources) OR 'url-guesser' = ANY(p_sources) THEN 1.0
+    WHEN EXISTS (SELECT 1 FROM unnest(p_sources) s WHERE s LIKE 'competitor_%') THEN 0.8
+    WHEN EXISTS (SELECT 1 FROM unnest(p_sources) s WHERE s LIKE 'rss_%') THEN 0.7
+    WHEN 'reddit' = ANY(p_sources) THEN 0.5
+    WHEN 'user_submission' = ANY(p_sources) THEN 0.4
+    WHEN 'serper' = ANY(p_sources) OR 'brave' = ANY(p_sources) THEN 0.3
+    ELSE 0.5
+  END;
 
   IF p_engagement IS NULL OR p_engagement <= 0 THEN
     engagement := 0;
@@ -300,6 +312,7 @@ BEGIN
     + (val * p_w_val / total_weight)
     + (uk * p_w_uk / total_weight)
     + (engagement * p_w_engage / total_weight)
+    + (rarity * p_w_rarity / total_weight)
   ));
 END;
 $$ LANGUAGE plpgsql;

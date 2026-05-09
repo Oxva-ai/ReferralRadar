@@ -20,13 +20,15 @@ export async function runRescore(): Promise<void> {
     const wVal = weights['score_weight_value'] ?? 0.20
     const wUk = weights['score_weight_uk_signal'] ?? 0.10
     const wEngage = weights['score_weight_engagement'] ?? 0.25
+    const wRare = weights['score_weight_source_rarity'] ?? 0.15
 
     const result = await pool.query<{ updated: number }>(
       `WITH calculated AS (
          SELECT id, compute_score(
            reward_numeric, discovered_at, source_count,
            uk_signal_strength, engagement_score,
-           $1::numeric, $2::numeric, $3::numeric, $4::numeric, $5::numeric
+           sources,
+           $1::numeric, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6::numeric
          ) AS new_score
          FROM referrals
          WHERE is_active = true
@@ -41,7 +43,7 @@ export async function runRescore(): Promise<void> {
          RETURNING referrals.id
        )
        SELECT COUNT(*)::int AS updated FROM updated`,
-      [wFresh, wNovel, wVal, wUk, wEngage],
+      [wFresh, wNovel, wVal, wUk, wEngage, wRare],
     )
 
     const updated = result.rows[0]?.updated ?? 0

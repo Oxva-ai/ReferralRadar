@@ -162,6 +162,7 @@ export interface ReferralRow {
   last_verified_at: Date | null
   expires_at: Date | null
   is_active: boolean
+  review_status: string
   is_aggregator: boolean
   referee_reward: string | null
   referrer_reward: string | null
@@ -206,6 +207,7 @@ export interface InsertReferral {
   reddit_score?: number | null
   reddit_comments?: number | null
   is_active?: boolean
+  review_status?: string
   is_aggregator?: boolean
   referee_reward?: string | null
   referrer_reward?: string | null
@@ -231,7 +233,7 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
       uk_signal_strength, reddit_post_id, reddit_score, reddit_comments,
       is_active, is_aggregator, referee_reward, referrer_reward, offer_summary,
       referral_code, terms_url, is_instant, is_no_id, is_gambling,
-      requires_spending, confidence, notes, category
+      requires_spending, confidence, notes, category, review_status
     ) VALUES (
       $1, $2, $3, $4, $5,
       $6, $7, $8, $9, $10,
@@ -240,7 +242,7 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
       $21, $22, $23, $24,
       $25, $26, $27, $28, $29,
       $30, $31, $32, $33, $34,
-      $35, $36, $37, $38
+      $35, $36, $37, $38, $39
     )
     RETURNING *
   `, [
@@ -282,6 +284,7 @@ export async function insertReferral(data: InsertReferral): Promise<ReferralRow>
     data.confidence ?? null,
     data.notes ?? null,
     data.category ?? null,
+    data.review_status ?? 'pending',
   ])
   return result.rows[0]!
 }
