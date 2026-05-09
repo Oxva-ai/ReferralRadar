@@ -4,7 +4,7 @@ import { config } from './config.js'
 import { logger } from './logger.js'
 import { pool } from './db/pool.js'
 import * as scheduler from './workers/scheduler.js'
-import { run as googleCseWorker } from './workers/google-cse.js'
+import { run as searchWorker } from './workers/search.js'
 import { run as redditWorker, runTertiary as redditTertiaryWorker } from './workers/reddit.js'
 import { run as competitorWorker } from './workers/competitor.js'
 import { run as rssWorker, runSecondary as rssSecondaryWorker, runTertiary as rssTertiaryWorker } from './workers/rss.js'
@@ -22,7 +22,7 @@ async function main() {
   })
 
   // Phase 1: Google CSE
-  scheduler.schedule('*/8 * * * *', 'google-cse', googleCseWorker)
+  scheduler.schedule('*/8 * * * *', 'search', searchWorker)
 
   // Phase 2: Reddit (primary)
   scheduler.schedule('*/15 * * * *', 'reddit', redditWorker)

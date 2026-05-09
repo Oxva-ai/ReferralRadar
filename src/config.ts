@@ -10,6 +10,8 @@ const envSchema = z.object({
   ADMIN_API_KEY: z.string().min(16).default('admin-key-16chars-minimum'),
   GOOGLE_CSE_KEY: z.string().min(1).default('dev-cse-key'),
   GOOGLE_CSE_ID: z.string().min(1).default('dev-cse-id'),
+  SERPER_API_KEY: z.string().min(1).default('dev-serper-key'),
+  BRAVE_API_KEY: z.string().min(1).default('dev-brave-key'),
   CORS_ORIGINS: z.string().default('https://easyearns.com'),
 })
 
