@@ -1,0 +1,9 @@
+[build]
+  builder = "nixpacks"
+  buildCommand = "npm ci && npm run build"
+
+[deploy]
+  startCommand = "npm start"
+  healthcheckPath = "/api/v1/health"
+  healthcheckTimeout = 15
+  restartPolicyMaxRetries = 3

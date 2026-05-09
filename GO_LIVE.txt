@@ -1,0 +1,301 @@
+REFERRAL DISCOVERY SERVICE — GO-LIVE CHECKLIST
+================================================
+Date: 10 May 2026
+
+
+WHAT WE BUILT (10 May 2026)
+----------------------------
+30 TypeScript files, 10,025 lines of code, 13 cron workers, 7 REST API endpoints.
+
+Service discovers UK referral offers before they saturate, using:
+  - Google Custom Search (100 free queries/day)
+  - Reddit (.json API, 7 UK subreddits)
+  - UK deal sites (LatestDeals, MagicFreebiesUK, Be Clever With Your Cash, Quidco, TopCashback)
+  - RSS feeds (10 sources, health-tracked)
+  - Page monitor (change detection on known referral pages)
+  - URL guesser (probes /referral, /invite, etc. on new domains)
+
+It feeds Easyearns.com via REST API with scored, deduplicated referrals including actual shareable referral links.
+
+Architecture: Single Express 5 process, TypeScript (strict, ESM), PostgreSQL on Supabase (free tier), deployed to Railway.
+
+
+REQUIRED ACCOUNTS (set up first)
+--------------------------------
+
+[ ] 1. SUPABASE
+    - Go to https://supabase.com, create an account
+    - Create a new project (free tier, 500MB PostgreSQL)
+    - Region: West Europe (London) — closest to UK users
+    - Wait for the database to provision (~2 minutes)
+    - Go to Settings > Database > Connection string
+    - Copy the "URI" format string
+    - You'll need this for the DATABASE_URL env var
+
+[ ] 2. GOOGLE CUSTOM SEARCH
+    - Go to https://programmablesearchengine.google.com/
+    - Click "Add" to create a new search engine
+    - Name: "Easyearns UK Referral Discovery"
+    - Choose "Search the entire web"
+    - Under Setup > Search the entire web, toggle ON
+    - Under Setup > Region, set to United Kingdom (GB)
+    - Click "Create"
+    - After creation, go to the CSE control panel
+    - Copy the "Search engine ID" (cx parameter)
+    - Go to https://console.cloud.google.com/apis/credentials
+    - Create a new API key
+    - Restrict the API key to "Custom Search API" only
+    - You'll need both: GOOGLE_CSE_KEY (API key) and GOOGLE_CSE_ID (search engine ID)
+    - Note: Free tier is 100 queries/day. This is enough for our query rotation.
+
+[ ] 3. RAILWAY
+    - Go to https://railway.app, sign up with GitHub
+    - You get $5 credit/month — enough for the minimum compute tier (~$4)
+
+[ ] 4. CRON-JOB.ORG (free uptime pinger — keeps Railway from sleeping)
+    - Go to https://cron-job.org
+    - Create a free account
+    - Add a new cron job
+    - URL: https://your-app.railway.app/api/v1/health
+    - Schedule: Every 5 minutes
+    - This prevents Railway free-tier cold starts
+
+
+SETUP STEPS (do in this order)
+------------------------------
+
+STEP 1: Push the code to GitHub
+    cd /home/oxva/Downloads/AutoScraper
+    git init
+    git add .
+    git commit -m "feat: initial referral discovery service"
+    git remote add origin https://github.com/YOUR_USERNAME/referral-discovery.git
+    git push -u origin main
+
+    NOTE: The .gitignore is already set up. No .env or secrets will be committed.
+
+STEP 2: Create your .env file
+    cd /home/oxva/Downloads/AutoScraper
+    cp .env.example .env
+
+    Edit .env with your credentials:
+
+    DATABASE_URL=postgresql://[YOUR_SUPABASE_URI]
+    EASYEARNS_API_KEY=[generate a random 32-char key]
+    ADMIN_API_KEY=[generate a different random 32-char key]
+    GOOGLE_CSE_KEY=[your Google API key]
+    GOOGLE_CSE_ID=[your search engine ID]
+    CORS_ORIGINS=https://easyearns.com
+    PORT=3000
+    NODE_ENV=production
+    LOG_LEVEL=info
+
+    Keep ADMIN_API_KEY secure — it gives access to the admin dashboard.
+    EASYEARNS_API_KEY is what Easyearns.com uses to call the API.
+
+    To generate secure keys:
+      node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+STEP 3: Run database migration
+    cd /home/oxva/Downloads/AutoScraper
+    npm run db:migrate
+
+    This creates all tables, indexes, extensions (pgcrypto, pg_trgm, fuzzystrmatch),
+    the compute_score() function, and default app_config values.
+
+    Verify: Go to Supabase dashboard > Table Editor. You should see:
+      - referrals
+      - monitored_pages
+      - offer_history
+      - api_usage
+      - submissions
+      - worker_runs
+      - app_config (has 6 rows — score weights + threshold)
+      - click_events
+      - impression_events
+
+STEP 4: Validate seed URLs
+    cd /home/oxva/Downloads/AutoScraper
+    npx tsx src/db/validate-seed.ts
+
+    This HEAD-checks all 28 seed URLs (Monzo, HelloFresh, Quidco, etc.).
+    It generates src/db/seed.sql containing only valid INSERTs.
+    It logs any URLs that returned 404 or errors — those need manual correction.
+
+    If any URLs fail, don't worry — just remove them from the seed list.
+    The page monitor will only track validated pages, so no ghost entries.
+
+STEP 5: Run the seed file
+    cd /home/oxva/Downloads/AutoScraper
+    npm run db:seed
+
+    This inserts the validated monitored_pages into the database.
+
+    NOTE: The seed script spreads next_check_at values evenly across 4 hours
+    to prevent a thundering herd on first deploy.
+
+STEP 6: Test locally
+    cd /home/oxva/Downloads/AutoScraper
+    npm run dev
+
+    Hit http://localhost:3000/api/v1/health in your browser.
+    Should return JSON with status "ok", db "connected", all workers listed.
+
+    Then test with auth:
+    curl -H "Authorization: Bearer YOUR_EASYEARNS_API_KEY" \
+         http://localhost:3000/api/v1/referrals
+
+    Should return an empty data array with meta — that's correct, you haven't
+    discovered anything yet. Workers will start populating on deploy.
+
+    Test the admin dashboard:
+    curl -H "Authorization: Bearer YOUR_ADMIN_API_KEY" \
+         http://localhost:3000/api/v1/admin/dashboard
+
+STEP 7: Deploy to Railway
+    - Go to Railway dashboard > New Project > Deploy from GitHub repo
+    - Select the referral-discovery repo
+    - Railway auto-detects the railway.toml config
+    - Add all environment variables from .env in the Railway dashboard
+      (Settings > Variables)
+    - Railway will build and deploy automatically
+    - Wait for the deploy to complete (~2-3 minutes)
+    - Check the deploy logs for errors
+    - Hit https://your-app.railway.app/api/v1/health to verify
+
+    IMPORTANT: The first deploy will start ALL workers immediately.
+    Google CSE will begin querying, Reddit worker will start scraping.
+    You should see discovered referrals within the first 15 minutes.
+
+STEP 8: Set up uptime monitoring
+    - Add https://your-app.railway.app/api/v1/health to cron-job.org
+    - Every 5 minutes
+    - Also add to UptimeRobot (free tier) for alerting
+    - The health endpoint returns 503 if any worker has 3+ consecutive failures
+      or any RSS feed is degraded
+
+STEP 9: Wire up Easyearns.com
+    - Easyearns.com calls these endpoints with the EASYEARNS_API_KEY:
+      GET  /api/v1/referrals          — list scored referrals
+      GET  /api/v1/referrals/:id      — single referral detail
+      GET  /api/v1/referrals/top      — top 20 this week
+      GET  /api/v1/referrals/changed  — terms changes
+      GET  /api/v1/referrals/stats    — dashboard aggregates
+      POST /api/v1/referrals/:id/click      — record a click (engagement feedback)
+      POST /api/v1/referrals/:id/impression — record an impression
+      POST /api/v1/submissions              — user submits a lead
+
+    Auth header: Authorization: Bearer EASYEARNS_API_KEY
+    All endpoints are rate-limited to 60 req/min per key.
+    User submissions are rate-limited to 20/hour per user ID.
+
+    IMPORTANT: Always call POST impression when displaying a referral,
+    and POST click when a user clicks a referral link. This feeds the
+    engagement scoring loop, which improves result ranking over time.
+
+
+WHEN TO EXPECT RESULTS
+----------------------
+
+  First 15 minutes:  Reddit worker finds 5-15 UK referrals from r/beermoneyuk
+  First 30 minutes:  Competitor worker finds deals from LatestDeals, MagicFreebiesUK
+  First hour:        RSS worker picks up news articles about new referral programs
+  First 4 hours:     Page monitor checks known pages for changes
+  First 24 hours:    URL guesser probes new domains for referral pages
+
+  After 24 hours you should have 30-50+ UK referrals in the database.
+  After 1 week the engagement scoring loop will have meaningful click data.
+
+
+WORKER SCHEDULE (for reference)
+-------------------------------
+
+  Every 8 minutes:    Google CSE (UK queries)
+  Every 15 minutes:   Reddit (primary subs), Score materialisation, Engagement aggregation
+  Every 30 minutes:   Competitor sources, RSS primary feeds
+  Every hour:         Reddit tertiary subs, RSS secondary feeds
+  Every 2 hours:      RSS tertiary feeds
+  Every 3 hours:      Verifier (stale referral re-check)
+  Every 4 hours:      Page monitor (change detection)
+  Every 6 hours:      Purge expired referrals and old events
+  Daily at 01:00 UTC: URL guesser
+  Daily at midnight:  Reset API quotas
+
+
+THINGS TO WATCH
+---------------
+
+  - CSE quota: 100 queries/day. If you hit the limit, Google CSE skips for the day.
+    The other sources (Reddit, competitors, RSS) provide enough volume usually.
+    If you consistently hit the limit, consider upgrading to $5/1000 queries.
+
+  - RSS feed health: Check GET /health regularly. If any feed shows "degraded",
+    that RSS source has returned 0 items for 3 consecutive runs. Find a replacement URL.
+
+  - Reddit rate limit: 60 requests/min (free tier). Our worker stays well under this
+    by staggering subreddit fetches and using OAuth-free .json endpoints.
+
+  - Railway cold starts: The cron-job.org pinger prevents this. Without it, the free
+    tier sleeps after inactivity and takes 2-3 seconds to wake up.
+
+  - Supabase 500MB limit: Our storage estimate is under 10MB for the first year.
+    Worker runs are capped at 1000 rows. Click events purged after 30 days.
+
+  - Cloudflare blocks: HotUKDeals, MoneySavingExpert, MyVoucherCodes, and VoucherCodes
+    are excluded from direct scraping. Google CSE compensates by finding the same deals
+    via Google's indexed pages.
+
+
+TROUBLESHOOTING
+---------------
+
+  Problem: Health endpoint returns 503
+  Fix: Check Railway logs. Look for "worker failed" or "feed degraded" messages.
+       If a specific worker is failing, check that API key is valid (Google CSE).
+
+  Problem: No referrals being discovered
+  Fix: Check Railway logs for CSE worker output. Make sure GOOGLE_CSE_KEY and
+       GOOGLE_CSE_ID are correct. Check that the CSE is set to search the entire web
+       (not just specific sites). Check Reddit worker — r/beermoneyuk should always
+       have referral posts. If nothing, Reddit may be rate-limiting. Wait 15 min.
+
+  Problem: Easyearns.com getting 401 unauthorized
+  Fix: The EASYEARNS_API_KEY must match exactly between the .env on Railway
+       and the key Easyearns.com sends in the Authorization header.
+       The key must be at least 16 characters.
+
+  Problem: Database connection errors
+  Fix: Check that DATABASE_URL is correct in Railway variables.
+       Supabase free tier pauses after 1 week of inactivity.
+       The cron workers hitting the DB keep it active.
+       Make sure SSL is enabled (the pool.ts config handles this automatically
+       in production mode).
+
+  Problem: Clicks not being recorded
+  Fix: Easyearns.com must call POST /api/v1/referrals/:id/click with the
+       correct referral UUID (the one returned by GET /referrals, not a
+       different ID). Check the response status code — 404 means wrong ID.
+
+
+NEXT IMPROVEMENTS (for later — not needed for go-live)
+------------------------------------------------------
+
+  - Add push notifications for high-scoring new referrals
+  - Upgrade to paid Google CSE if hitting free quota consistently
+  - Add Puppeteer for Cloudflare-protected sites (requires larger Railway tier)
+  - Multi-instance deployment with pg_advisory_lock instead of in-memory mutex
+  - LLM-based extraction for pages where regex fails (adds API cost)
+  - Historical trend dashboard showing referral volume over time
+  - Alert when a major referral program changes terms (e.g., Monzo drops £5 → £20)
+
+
+FILE REFERENCE
+--------------
+
+  /home/oxva/Downloads/AutoScraper/
+    SPECIFICATION.md         — 1998-line technical specification (read-only reference)
+    src/                     — 30 TypeScript source files
+    tests/                   — 39 unit tests (uk-filter + extractor patterns)
+    .env.example             — Template for environment variables
+    railway.toml             — Railway deployment config
+    package.json             — Dependencies and scripts
