@@ -48,12 +48,27 @@ export function createApp(): express.Express {
 
   app.use('/api/v1', (req, res, next) => {
     if (req.path === '/health') return next()
-    const key = req.headers.authorization?.replace('Bearer ', '')
-    if (!timingSafeEqual(Buffer.from(key ?? ''), Buffer.from(config.EASYEARNS_API_KEY))
-      && !timingSafeEqual(Buffer.from(key ?? ''), Buffer.from(config.ADMIN_API_KEY))) {
+    const key = req.headers.authorization?.replace('Bearer ', '') ?? ''
+
+    // timingSafeEqual requires equal-length buffers — pad shorter key
+    const keyBuf = Buffer.from(key)
+    const easyearnsBuf = Buffer.from(config.EASYEARNS_API_KEY)
+    const adminBuf = Buffer.from(config.ADMIN_API_KEY)
+
+    if (keyBuf.length !== easyearnsBuf.length && keyBuf.length !== adminBuf.length) {
       return res.status(401).json({ error: 'unauthorized' })
     }
-    req.isAdmin = key === config.ADMIN_API_KEY
+
+    const isEasyearns = keyBuf.length === easyearnsBuf.length
+      && timingSafeEqual(keyBuf, easyearnsBuf)
+    const isAdmin = keyBuf.length === adminBuf.length
+      && timingSafeEqual(keyBuf, adminBuf)
+
+    if (!isEasyearns && !isAdmin) {
+      return res.status(401).json({ error: 'unauthorized' })
+    }
+
+    req.isAdmin = isAdmin
     next()
   })
 
