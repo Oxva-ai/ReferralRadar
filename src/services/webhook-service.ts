@@ -62,31 +62,46 @@ async function deliver(webhook: Webhook, payload: WebhookPayload): Promise<void>
     ? await createSignature(webhook.secret, body)
     : null
 
-  try {
-    const response = await fetch(webhook.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'ReferralRadar-Webhook/1.0',
-        ...(signature ? { 'X-Webhook-Signature': signature } : {}),
-      },
-      body,
-      signal: AbortSignal.timeout(10_000),
-    })
+  const maxRetries = 5
+  const backoffBase = 1000
 
-    await pool.query(
-      `INSERT INTO webhook_deliveries (webhook_id, event, status, response_code, response_body)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [webhook.id, payload.event, response.ok ? 'delivered' : 'failed', response.status, await response.text().catch(() => null)],
-    )
-  } catch (err) {
-    logger.warn({ err, webhook: webhook.id, url: webhook.url }, 'webhook delivery failed')
-    await pool.query(
-      `INSERT INTO webhook_deliveries (webhook_id, event, status, response_code)
-       VALUES ($1, $2, 'failed', 0)`,
-      [webhook.id, payload.event],
-    )
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(webhook.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'ReferralRadar-Webhook/1.0',
+          ...(signature ? { 'X-Webhook-Signature': signature } : {}),
+        },
+        body,
+        signal: AbortSignal.timeout(10_000),
+      })
+
+      await pool.query(
+        `INSERT INTO webhook_deliveries (webhook_id, event, status, response_code, response_body, attempted_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [webhook.id, payload.event, response.ok ? 'delivered' : 'failed',
+         response.status, await response.text().catch(() => null)],
+      )
+
+      if (response.ok) return
+    } catch (err) {
+      logger.warn({ err, webhook: webhook.id, url: webhook.url, attempt }, 'webhook delivery attempt failed')
+    }
+
+    if (attempt < maxRetries) {
+      const delay = backoffBase * (2 ** attempt)
+      await new Promise(r => setTimeout(r, delay))
+    }
   }
+
+  logger.warn({ webhook: webhook.id, url: webhook.url, maxRetries }, 'webhook delivery exhausted all retries')
+  await pool.query(
+    `INSERT INTO webhook_deliveries (webhook_id, event, status, response_code, attempted_at)
+     VALUES ($1, $2, 'exhausted', 0, NOW())`,
+    [webhook.id, payload.event],
+  )
 }
 
 async function createSignature(secret: string, body: string): Promise<string> {

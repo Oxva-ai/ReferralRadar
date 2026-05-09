@@ -8,6 +8,7 @@ import {
   insertClickEvent,
   insertImpressionEvent,
   getHealthStats,
+  getDiscoveryMetrics,
   type ReferralRow,
 } from '../db/queries.js'
 import { queue, enqueueJobToDb } from '../services/queue.js'
@@ -35,6 +36,7 @@ router.get('/health', async (_req: Request, res: Response) => {
     const health = await getHealthStats()
     const quotas = await getAllQuotaUsage()
     const degradedFeeds = getDegradedFeeds()
+    const metrics = await getDiscoveryMetrics()
 
     res.json({
       status: degradedFeeds.length > 0 ? 'degraded' : 'ok',
@@ -52,6 +54,7 @@ router.get('/health', async (_req: Request, res: Response) => {
       rss: { degraded_feeds: degradedFeeds },
       total_active: health.totalActive,
       discovered_today: health.discoveredToday,
+      discovery: metrics,
       version: '1.0.0',
     })
   } catch (err) {
@@ -383,6 +386,7 @@ function formatReferral(row: ReferralRow) {
     engagement_score: row.engagement_score,
     change_type: row.change_type,
     sources: row.sources,
+    first_source: row.sources?.[0] ?? null,
     source_count: row.source_count,
     uk_signal_strength: row.uk_signal_strength,
     discovered_at: row.discovered_at,

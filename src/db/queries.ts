@@ -559,4 +559,32 @@ export async function getHealthStats() {
   }
 }
 
+export async function getDiscoveryMetrics(): Promise<Record<string, unknown>> {
+  const [bySource, success, totalToday] = await Promise.all([
+    pool.query<{ source: string; count: number }>(
+      `SELECT trim(unnest(sources)) AS source, COUNT(*)::int AS count
+       FROM referrals WHERE is_active = true AND discovered_at > NOW() - INTERVAL '24 hours'
+       GROUP BY source ORDER BY count DESC`,
+    ),
+    pool.query<{ count: number }>(
+      `SELECT COUNT(*)::int FROM referrals
+       WHERE is_active = true AND discovered_at > NOW() - INTERVAL '24 hours'
+       AND (referral_link IS NOT NULL OR reward_numeric IS NOT NULL)`,
+    ),
+    pool.query<{ count: number }>(
+      `SELECT COUNT(*)::int FROM referrals
+       WHERE is_active = true AND discovered_at > NOW() - INTERVAL '24 hours'`,
+    ),
+  ])
+
+  const totalCount = totalToday.rows[0]?.count ?? 0
+  return {
+    by_source: bySource.rows,
+    extraction_success_rate: totalCount > 0
+      ? Math.round(((success.rows[0]?.count ?? 0) / totalCount) * 100)
+      : 0,
+    total_discovered_24h: totalCount,
+  }
+}
+
 
