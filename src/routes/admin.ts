@@ -202,6 +202,13 @@ function renderDashboard(d: DashboardData): string {
     ${d.degradedFeeds.length ? `<span class="warn">Degraded RSS: ${esc(d.degradedFeeds.join(', '))}</span>` : '<span class="success">All RSS feeds healthy</span>'}
   </div>`
 
+  let failedWorkers = ''
+  for (const w of d.workers) {
+    if (w.status === 'failed') {
+      failedWorkers += '<span class="stat-alert err" style="display:inline-block;margin-right:6px;margin-bottom:4px">&#9888; ' + esc(w.worker_name) + ' failed: ' + esc(String(w.error_message || 'unknown')).substring(0, 60) + '</span>'
+    }
+  }
+
   // Category bars
   let categoryHtml = ''
   const maxCat = d.categories.length > 0 ? Math.max(...d.categories.map(c => c.count)) : 1
@@ -249,9 +256,12 @@ function renderDashboard(d: DashboardData): string {
       reward_numeric: r.reward_numeric, currency: r.currency, friend_reward: r.friend_reward,
       reward_type: r.reward_type, category: r.category, review_status: review, confidence: r.confidence,
       score: r.score, sources: r.sources, discovered_at: r.discovered_at, notes: r.notes,
+      referee_reward: r.referee_reward, referrer_reward: r.referrer_reward,
+      offer_summary: r.offer_summary, referral_code: r.referral_code,
+      terms_url: r.terms_url, first_source: primarySource,
     }).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
 
-    referralRows += `<tr class="ref-row" data-id="${esc(id)}" data-json="${dataJson}" data-company="${esc(companyName)}" data-reward="${esc(r.reward)}" data-category="${esc(cat)}" data-review="${esc(review)}">
+    referralRows += `<tr class="ref-row" data-id="${esc(id)}" data-json="${dataJson}" data-company="${esc(companyName)}" data-reward="${esc(r.reward)}" data-category="${esc(cat)}" data-review="${esc(review)}" data-score="${score}" data-reward-num="${r.reward_numeric ?? 0}" data-date="${r.discovered_at}">
       <td class="cb-col"><input type="checkbox" class="ref-checkbox" data-id="${esc(id)}"></td>
       <td><span class="ref-name" title="${esc(r.company_name ?? '')}"><a class="ref-link" href="${esc(r.source_url ?? '#')}" target="_blank" rel="noopener">${esc(companyName)}</a></span></td>
       <td>${esc(r.reward)}</td>
@@ -262,8 +272,10 @@ function renderDashboard(d: DashboardData): string {
       <td><span class="source-tag">${esc(primarySource)}</span></td>
       <td class="actions-col">
         <button class="btn-sm btn-approve" data-id="${esc(id)}" title="Approve">&#10003;</button>
+        <button class="btn-sm btn-needsfix" data-id="${esc(id)}" title="Needs Fix" style="color:#D97706;border-color:#D97706;font-size:12px;padding:1px 5px">!</button>
         <button class="btn-sm btn-reject" data-id="${esc(id)}" title="Reject">&#10007;</button>
         <button class="btn-sm btn-edit" data-id="${esc(id)}" title="Edit">&#9998;</button>
+        <button class="btn-sm btn-del" data-id="${esc(id)}" title="Deactivate">&#10005;</button>
       </td>
     </tr>`
   }
@@ -364,6 +376,8 @@ function renderDashboard(d: DashboardData): string {
   .btn-approve:hover:not(:disabled){background:rgba(15,118,110,.1);color:#0D6B63}
   .btn-reject{color:#DC2626;border-color:#DC2626;background:#FFFFFF;font-size:14px;padding:1px 6px;margin-left:2px}
   .btn-reject:hover:not(:disabled){background:rgba(220,38,38,.1)}
+  .btn-needsfix{color:#D97706;border-color:#D97706;background:#FFFFFF;font-size:12px;padding:1px 5px;margin-left:2px}
+  .btn-needsfix:hover:not(:disabled){background:rgba(217,119,6,.1)}
   .btn-del{color:#DC2626;border-color:#DC2626;background:#FFFFFF;margin-left:4px}
   .btn-del:hover:not(:disabled){background:rgba(220,38,38,.06)}
   .btn-run{color:#0F766E;border-color:#0F766E;background:#FFFFFF}
@@ -477,6 +491,7 @@ function renderDashboard(d: DashboardData): string {
     <span style="font-size:11px;color:#64748B">Approves all referrals with confidence ≥ 0.7 and proper company/reward data</span>
   </div>
   <div>${statusRow}</div>
+  ${failedWorkers ? `<div style="margin-top:4px;font-size:11px">${failedWorkers}</div>` : ''}
   <h3 style="margin:20px 0 10px;font-size:14px;font-weight:600;color:#1E293B">Category Breakdown</h3>
   ${d.categories.length === 0 ? '<p class="empty">No categories yet.</p>' : categoryHtml}
   <h3 style="margin:20px 0 10px;font-size:14px;font-weight:600;color:#1E293B">Source Breakdown</h3>
@@ -494,6 +509,14 @@ function renderDashboard(d: DashboardData): string {
       <button data-filter="low_confidence">Low Confidence</button>
     </div>
     <input type="text" id="ref-search" placeholder="Search...">
+    <select id="sort-select" style="padding:3px 8px;font-size:12px">
+      <option value="score-desc">Highest Score</option>
+      <option value="score-asc">Lowest Score</option>
+      <option value="date-desc">Newest First</option>
+      <option value="date-asc">Oldest First</option>
+      <option value="company-asc">Company A-Z</option>
+      <option value="reward-desc">Highest Reward</option>
+    </select>
     <select id="batch-category">
       <option value="">Batch categorise…</option>
       <option value="banking">Banking</option>
@@ -681,6 +704,22 @@ function renderDashboard(d: DashboardData): string {
     })
   }
 
+  //---- referrals: sort ----
+  document.getElementById('sort-select')?.addEventListener('change', function(){
+    var val = this.value
+    var tbody = document.getElementById('ref-tbody')
+    var rows = Array.from(tbody.querySelectorAll('.ref-row'))
+    rows.sort(function(a, b){
+      var cmp
+      if (val.startsWith('score')) { cmp = (parseFloat(a.dataset.score || '0') - parseFloat(b.dataset.score || '0')) }
+      else if (val.startsWith('date')) { cmp = (new Date(a.dataset.date || 0).getTime() - new Date(b.dataset.date || 0).getTime()) }
+      else if (val.startsWith('company')) { cmp = (a.dataset.company || '').toLowerCase().localeCompare((b.dataset.company || '').toLowerCase()) }
+      else { cmp = (parseFloat(a.dataset.rewardNum || '0') - parseFloat(b.dataset.rewardNum || '0')) }
+      return val.endsWith('desc') ? -cmp : cmp
+    })
+    rows.forEach(function(r){ tbody.appendChild(r) })
+  })
+
   //---- referrals: select all ----
   var selectAll = document.getElementById('select-all')
   if (selectAll) {
@@ -737,24 +776,28 @@ function renderDashboard(d: DashboardData): string {
 
   //---- referrals: approve / reject inline ----
   document.getElementById('ref-tbody')?.addEventListener('click', function(e){
-    var btn = e.target.closest('.btn-approve') || e.target.closest('.btn-reject')
+    var btn = e.target.closest('.btn-approve') || e.target.closest('.btn-reject') || e.target.closest('.btn-needsfix')
     if (!btn) return
     e.stopPropagation()
     var id = btn.dataset.id
     var isApprove = btn.classList.contains('btn-approve')
+    var isReject = btn.classList.contains('btn-reject')
+    var status = isApprove ? 'approved' : isReject ? 'rejected' : 'needs_fix'
+    var label = isApprove ? 'Approved' : isReject ? 'Rejected' : 'Marked needs fix'
+    var badgeClass = isApprove ? 'badge-approved' : isReject ? 'badge-rejected' : 'badge-needsfix'
     var row = btn.closest('.ref-row')
     api('admin/referrals/' + id + '/review', {
       method: 'PATCH', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({status: isApprove ? 'approved' : 'rejected'})
+      body: JSON.stringify({status: status})
     }).then(function(r){ return r.json() }).then(function(d){
       if (d.status === 'ok') {
-        toast((isApprove ? 'Approved' : 'Rejected'), 'success')
+        toast(label, 'success')
         if (row) {
-          row.dataset.review = isApprove ? 'approved' : 'rejected'
+          row.dataset.review = status
           var badge = row.querySelector('.badge')
           if (badge) {
-            badge.textContent = isApprove ? 'approved' : 'rejected'
-            badge.className = 'badge ' + (isApprove ? 'badge-approved' : 'badge-rejected')
+            badge.textContent = status.replace('_',' ')
+            badge.className = 'badge ' + badgeClass
           }
         }
       } else { toast(d.error || 'Failed', 'error') }
@@ -784,6 +827,10 @@ function renderDashboard(d: DashboardData): string {
       ['ID', data.id],
       ['Company', data.company_name],
       ['Reward', data.reward],
+      ['Referee Reward', data.referee_reward],
+      ['Referrer Reward', data.referrer_reward],
+      ['Offer Summary', data.offer_summary],
+      ['Referral Code', data.referral_code],
       ['Numeric', data.reward_numeric],
       ['Currency', data.currency],
       ['Friend Reward', data.friend_reward],
@@ -801,6 +848,10 @@ function renderDashboard(d: DashboardData): string {
       ['Referral Link', data.referral_link ? '<a href="'+data.referral_link+'" target="_blank">'+data.referral_link+'</a>' : '--'],
       ['Domain', data.domain],
       ['Offer Text', data.offer_text],
+      ['Terms URL', data.terms_url ? '<a href="'+data.terms_url+'" target="_blank">'+data.terms_url+'</a>' : '--'],
+      ['Confidence', data.confidence != null ? Math.round(data.confidence*100)+'%' : '--'],
+      ['Review Status', data.review_status || 'pending'],
+      ['First Source', data.first_source],
       ['Discovered', data.discovered_at ? new Date(data.discovered_at).toLocaleString() : '--'],
       ['Last Verified', data.last_verified_at ? new Date(data.last_verified_at).toLocaleString() : '--'],
       ['Expires', data.expires_at ? new Date(data.expires_at).toLocaleString() : '--'],
@@ -929,7 +980,10 @@ function renderDashboard(d: DashboardData): string {
     document.getElementById('panel-title').textContent = 'History: ' + name
     document.getElementById('panel-content').textContent = 'Loading…'
     workerPanel.classList.add('open')
-    api('admin/workers/' + name).then(function(r){ return r.json() }).then(function(d){
+    api('admin/workers/' + name).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json()
+    }).then(function(d){
       var data = d.data || []
       if (data.length === 0) {
         document.getElementById('panel-content').innerHTML = '<p class="empty">No run history.</p>'
@@ -947,6 +1001,8 @@ function renderDashboard(d: DashboardData): string {
       })
       html += '</tbody></table>'
       document.getElementById('panel-content').innerHTML = html
+    }).catch(function(err){
+      document.getElementById('panel-content').innerHTML = '<p class="empty" style="color:#DC2626">Failed to load: '+err.message+'</p>'
     })
   })
 
