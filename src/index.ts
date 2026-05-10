@@ -63,6 +63,17 @@ async function main() {
   scheduler.schedule('0 3 * * *', 'gdpr-cleanup', gdprRetentionCleanup)
 
   await queue.start()
+
+  try {
+    await pool.query(
+      `UPDATE referrals SET review_status = 'approved', updated_at = NOW()
+       WHERE is_active = true AND review_status = 'pending'
+       AND (confidence >= 0.3 OR score >= 0.5)
+       AND company_name IS NOT NULL
+       AND company_name NOT LIKE '%refer%'`
+    )
+  } catch { /* non-critical */ }
+
   scheduler.start()
   logger.info('all workers scheduled')
 }

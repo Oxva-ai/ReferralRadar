@@ -90,6 +90,39 @@ const SOURCES: CompetitorSource[] = [
   { name: 'becleverwithyourcash', url: 'https://www.becleverwithyourcash.co.uk/best-bank-switching-offers/', parser: parseBeClever },
   { name: 'quidco', url: 'https://www.quidco.com/refer-a-friend/', parser: parseQuidco },
   { name: 'topcashback', url: 'https://www.topcashback.co.uk/refer/', parser: parseTopCashback },
+  { name: 'moneytothemasses', url: 'https://www.moneytothemasses.com/', parser: async ($, baseUrl) => {
+    const results: Array<{ title: string; url: string; text: string }> = []
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href')
+      const text = $(el).text().trim()
+      if (href && text && /refer|bonus|switch|join/i.test(href + text) && href.includes('moneytothemasses')) {
+        results.push({ title: text, url: href.startsWith('http') ? href : baseUrl + href, text })
+      }
+    })
+    return results.slice(0, 10)
+  }},
+  { name: 'savethestudent', url: 'https://www.savethestudent.org/banking', parser: async ($, baseUrl) => {
+    const results: Array<{ title: string; url: string; text: string }> = []
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href')
+      const text = $(el).text().trim()
+      if (href && text && /refer|free|bonus|switch/i.test(href + text) && (href.includes('savethestudent') || href.startsWith('http'))) {
+        results.push({ title: text, url: href.startsWith('http') ? href : 'https://www.savethestudent.org' + href, text })
+      }
+    })
+    return results.slice(0, 10)
+  }},
+  { name: 'moneymagpie', url: 'https://www.moneymagpie.com/', parser: async ($, baseUrl) => {
+    const results: Array<{ title: string; url: string; text: string }> = []
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href')
+      const text = $(el).text().trim()
+      if (href && text && /refer|free|bonus|switch|cash/i.test(href + text)) {
+        results.push({ title: text, url: href.startsWith('http') ? href : baseUrl + href, text })
+      }
+    })
+    return results.slice(0, 10)
+  }},
 ]
 
 export async function run(): Promise<void> {

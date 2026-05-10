@@ -155,12 +155,14 @@ router.post('/admin/referrals/auto-approve', async (req: Request, res: Response)
 
   try {
     const { min_confidence } = req.body ?? {}
-    const threshold = parseFloat(min_confidence) || 0.5
+    const threshold = parseFloat(min_confidence) || 0.3
 
     const result = await pool.query(
       `UPDATE referrals SET review_status = 'approved', updated_at = NOW()
        WHERE is_active = true AND review_status = 'pending'
-       AND confidence >= $1 AND company_name IS NOT NULL AND reward_numeric IS NOT NULL
+       AND (confidence >= $1 OR score >= 0.5)
+       AND company_name IS NOT NULL
+       AND company_name NOT LIKE '%refer%'
        RETURNING id`,
       [threshold],
     )

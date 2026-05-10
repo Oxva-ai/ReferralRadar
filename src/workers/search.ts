@@ -18,12 +18,20 @@ interface SearchResult {
 const UK_QUERIES = [
   '"refer a friend" "just launched" UK',
   '"introducing our referral programme" UK',
-  '"referral code" "get £" UK',
-  '"bank switching" "refer a friend" UK',
-  '"share your link" "earn £" UK',
+  '"new refer a friend" "sign up" UK',
+  '"refer a friend" bank UK £"',
+  '"referral code" bank switching UK',
+  '"share your link" "earn £" UK finance',
+  '"refer a friend" energy supplier UK £',
+  '"referral" broadband mobile UK "£"',
   '"refer a friend" "free box" UK',
-  '"referral" trading app UK "free share"',
-  '"refer" energy supplier UK',
+  '"referral code" food delivery UK',
+  '"refer a friend" cashback voucher UK',
+  '"refer a friend" "free share" trading UK',
+  '"referral code" crypto UK',
+  '"referral code" "get £" UK',
+  '"refer a friend" 2025 2026 UK "£"',
+  '"invite your friends" reward bonus UK',
 ]
 
 let queryIndex = 0
